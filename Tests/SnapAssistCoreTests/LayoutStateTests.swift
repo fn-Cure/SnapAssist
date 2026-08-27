@@ -82,6 +82,32 @@ final class LayoutStateTests: XCTestCase {
         XCTAssertTrue(session.candidates.isEmpty)
     }
 
+    func testTriggerReplacesPreviousOccupantOfSameZone() throws {
+        let previous = window(
+            id: "previous",
+            pid: 1,
+            frame: CGRect(x: 0, y: 0, width: 600, height: 800),
+            zOrder: 0
+        )
+        let trigger = window(
+            id: "trigger",
+            pid: 2,
+            frame: CGRect(x: 0, y: 0, width: 600, height: 800),
+            zOrder: 1
+        )
+
+        let session = try XCTUnwrap(LayoutStateBuilder.buildSession(
+            trigger: trigger,
+            windowsOnTargetScreen: [previous, trigger],
+            allVisibleWindows: [previous, trigger],
+            screenFrame: screen,
+            ownProcessID: 99
+        ))
+
+        XCTAssertNil(session.group.members["previous"])
+        XCTAssertEqual(session.group.members["trigger"], [0])
+    }
+
     func testEventGateSuppressesProgrammaticAndDuplicateEvents() {
         var gate = WindowEventGate(cooldown: 1.0)
         let frame = CGRect(x: 0, y: 0, width: 600, height: 800)
@@ -101,7 +127,8 @@ final class LayoutStateTests: XCTestCase {
         isMinimized: Bool = false,
         isMovable: Bool = true,
         isResizable: Bool = true,
-        isSystemWindow: Bool = false
+        isSystemWindow: Bool = false,
+        zOrder: Int = 0
     ) -> WindowDescriptor {
         WindowDescriptor(
             id: id,
@@ -110,7 +137,7 @@ final class LayoutStateTests: XCTestCase {
             title: id,
             frame: frame,
             screenID: screenID,
-            zOrder: 0,
+            zOrder: zOrder,
             isMinimized: isMinimized,
             isMovable: isMovable,
             isResizable: isResizable,
@@ -118,4 +145,3 @@ final class LayoutStateTests: XCTestCase {
         )
     }
 }
-

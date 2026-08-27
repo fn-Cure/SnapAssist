@@ -136,6 +136,10 @@ public enum LayoutStateBuilder {
             claimedZones.formUnion(zones)
         }
 
+        let triggerZones = Set(match.coveredZoneIDs)
+        members = members.filter { id, zones in
+            id == trigger.id || Set(zones).isDisjoint(with: triggerZones)
+        }
         members[trigger.id] = match.coveredZoneIDs
         let occupiedIDs = Set(members.keys)
         let candidates = CandidateFilter.eligibleWindows(
@@ -186,4 +190,3 @@ public struct WindowEventGate: Sendable {
         return true
     }
 }
-
