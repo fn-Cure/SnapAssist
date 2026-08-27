@@ -9,6 +9,12 @@ enum WindowSystemError: Error {
     case frameWriteFailed
 }
 
+enum WindowSystemEvent {
+    case geometryChanged(windowID: String)
+    case inventoryChanged
+    case focusChanged
+}
+
 final class WindowSystem {
     private final class WindowRecord {
         let id: String
@@ -23,7 +29,7 @@ final class WindowSystem {
     }
 
     var isEnabled = true
-    var onWindowsChanged: (() -> Void)?
+    var onEvent: ((WindowSystemEvent) -> Void)?
 
     private var records: [String: WindowRecord] = [:]
     private var observers: [pid_t: AXObserver] = [:]
@@ -70,7 +76,7 @@ final class WindowSystem {
                 queue: .main
             ) { [weak self] _ in
                 self?.refreshObservers()
-                self?.onWindowsChanged?()
+                self?.onEvent?(.inventoryChanged)
             })
         }
         refreshObservers()
@@ -222,14 +228,27 @@ final class WindowSystem {
     }
 
     fileprivate func handle(notification: CFString, element: AXUIElement) {
-        if notification as String == kAXWindowCreatedNotification as String {
+        let notificationName = notification as String
+        if notificationName == kAXWindowCreatedNotification as String {
             var processID: pid_t = 0
             AXUIElementGetPid(element, &processID)
             if let observer = observers[processID] {
                 observe(window: element, with: observer)
             }
+            onEvent?(.inventoryChanged)
+            return
         }
-        onWindowsChanged?()
+
+        if notificationName == kAXMovedNotification as String
+            || notificationName == kAXResizedNotification as String {
+            var processID: pid_t = 0
+            AXUIElementGetPid(element, &processID)
+            onEvent?(.geometryChanged(windowID: windowID(processID: processID, element: element)))
+        } else if notificationName == kAXFocusedWindowChangedNotification as String {
+            onEvent?(.focusChanged)
+        } else {
+            onEvent?(.inventoryChanged)
+        }
     }
 
     private func observe(window: AXUIElement, with observer: AXObserver) {

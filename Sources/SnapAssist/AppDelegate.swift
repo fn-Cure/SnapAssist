@@ -1,18 +1,18 @@
 import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let windowSystem = WindowSystem()
+    private let coordinator = AppCoordinator()
     private var statusItem: NSStatusItem?
     private var isEnabled = true
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildStatusMenu()
-        windowSystem.start()
-        _ = windowSystem.requestAccessibilityPermission(prompt: true)
+        coordinator.start()
+        _ = coordinator.windowSystem.requestAccessibilityPermission(prompt: true)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        windowSystem.stop()
+        coordinator.stop()
     }
 
     private func buildStatusMenu() {
@@ -33,21 +33,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(toggle)
 
         let accessibility = NSMenuItem(
-            title: windowSystem.isAccessibilityTrusted ? "Bedienungshilfen: erlaubt" : "Bedienungshilfen erlauben…",
+            title: coordinator.windowSystem.isAccessibilityTrusted ? "Bedienungshilfen: erlaubt" : "Bedienungshilfen erlauben…",
             action: #selector(openAccessibilitySettings),
             keyEquivalent: ""
         )
         accessibility.target = self
-        accessibility.isEnabled = !windowSystem.isAccessibilityTrusted
+        accessibility.isEnabled = !coordinator.windowSystem.isAccessibilityTrusted
         menu.addItem(accessibility)
 
         let recording = NSMenuItem(
-            title: windowSystem.hasScreenRecordingPermission ? "Bildschirmaufnahme: erlaubt" : "Bildschirmaufnahme erlauben…",
+            title: coordinator.windowSystem.hasScreenRecordingPermission ? "Bildschirmaufnahme: erlaubt" : "Bildschirmaufnahme erlauben…",
             action: #selector(requestScreenRecording),
             keyEquivalent: ""
         )
         recording.target = self
-        recording.isEnabled = !windowSystem.hasScreenRecordingPermission
+        recording.isEnabled = !coordinator.windowSystem.hasScreenRecordingPermission
         menu.addItem(recording)
 
         menu.addItem(.separator())
@@ -58,17 +58,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleEnabled() {
         isEnabled.toggle()
-        windowSystem.isEnabled = isEnabled
+        coordinator.isEnabled = isEnabled
         statusItem?.menu = makeMenu()
     }
 
     @objc private func openAccessibilitySettings() {
-        windowSystem.openAccessibilitySettings()
+        coordinator.windowSystem.openAccessibilitySettings()
     }
 
     @objc private func requestScreenRecording() {
-        windowSystem.requestScreenRecordingPermission()
+        coordinator.windowSystem.requestScreenRecordingPermission()
         statusItem?.menu = makeMenu()
     }
 }
-
