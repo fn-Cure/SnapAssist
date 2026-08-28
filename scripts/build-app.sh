@@ -24,16 +24,27 @@ fi
 mkdir -p "$app_path/Contents/MacOS" "$app_path/Contents/Resources"
 cp "$binary_dir/SnapAssist" "$app_path/Contents/MacOS/SnapAssist"
 cp "$project_root/Resources/Info.plist" "$app_path/Contents/Info.plist"
+cp "$project_root/Resources/AppIcon.icns" "$app_path/Contents/Resources/AppIcon.icns"
 chmod 755 "$app_path/Contents/MacOS/SnapAssist"
 
 plutil -lint "$app_path/Contents/Info.plist"
+
+signing_identity="${SNAPASSIST_CODE_SIGN_IDENTITY:-}"
+if [[ -z "$signing_identity" ]]; then
+  signing_identity="$(security find-identity -v -p codesigning \
+    | awk -F '"' '/Apple Development/ { print $2; exit }')"
+fi
+if [[ -z "$signing_identity" ]]; then
+  signing_identity="-"
+fi
+
 codesign \
   --force \
   --deep \
-  --sign - \
+  --sign "$signing_identity" \
   --identifier com.caner.snapassist \
   "$app_path"
 codesign --verify --deep --strict --verbose=2 "$app_path"
 
+echo "Signed with: $signing_identity"
 echo "$app_path"
-

@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import CoreGraphics
+import OSLog
 import SnapAssistCore
 
 enum WindowSystemError: Error {
@@ -34,6 +35,7 @@ final class WindowSystem {
     private var records: [String: WindowRecord] = [:]
     private var observers: [pid_t: AXObserver] = [:]
     private var workspaceObservers: [NSObjectProtocol] = []
+    private let logger = Logger(subsystem: "com.caner.snapassist", category: "WindowSystem")
 
     var isAccessibilityTrusted: Bool {
         AXIsProcessTrusted()
@@ -64,6 +66,7 @@ final class WindowSystem {
 
     func start() {
         guard workspaceObservers.isEmpty else { return }
+        logger.notice("Starting WindowSystem; Accessibility trusted: \(self.isAccessibilityTrusted)")
         let center = NSWorkspace.shared.notificationCenter
         for name in [
             NSWorkspace.didLaunchApplicationNotification,
@@ -138,6 +141,7 @@ final class WindowSystem {
         }
 
         records = nextRecords
+        logger.debug("Visible movable windows: \(descriptors.count)")
         return descriptors.sorted { $0.zOrder < $1.zOrder }
     }
 
@@ -197,7 +201,10 @@ final class WindowSystem {
     }
 
     private func refreshObservers() {
-        guard isAccessibilityTrusted else { return }
+        guard isAccessibilityTrusted else {
+            logger.error("Cannot install AX observers because Accessibility is not trusted")
+            return
+        }
         let runningPIDs = Set(NSWorkspace.shared.runningApplications.map(\.processIdentifier))
         for (pid, observer) in observers where !runningPIDs.contains(pid) {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
@@ -209,12 +216,16 @@ final class WindowSystem {
             && observers[app.processIdentifier] == nil {
             installObserver(for: app.processIdentifier)
         }
+        logger.debug("Active AX observers: \(self.observers.count)")
     }
 
     private func installObserver(for processID: pid_t) {
         var observer: AXObserver?
         let result = AXObserverCreate(processID, windowSystemObserverCallback, &observer)
-        guard result == .success, let observer else { return }
+        guard result == .success, let observer else {
+            logger.error("AXObserverCreate failed for pid \(processID) with code \(result.rawValue)")
+            return
+        }
 
         let appElement = AXUIElementCreateApplication(processID)
         add(notification: kAXWindowCreatedNotification, element: appElement, observer: observer)
@@ -229,6 +240,7 @@ final class WindowSystem {
 
     fileprivate func handle(notification: CFString, element: AXUIElement) {
         let notificationName = notification as String
+        logger.debug("Received AX notification: \(notificationName, privacy: .public)")
         if notificationName == kAXWindowCreatedNotification as String {
             var processID: pid_t = 0
             AXUIElementGetPid(element, &processID)

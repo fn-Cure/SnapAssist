@@ -1,14 +1,23 @@
 import AppKit
+import SnapAssistCore
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private let accessibilityPromptKey = "hasRequestedAccessibilityPermission"
     private let coordinator = AppCoordinator()
     private var statusItem: NSStatusItem?
     private var isEnabled = true
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildStatusMenu()
+        let defaults = UserDefaults.standard
+        if AccessibilityPromptPolicy.shouldPrompt(
+            isTrusted: coordinator.windowSystem.isAccessibilityTrusted,
+            hasRequestedBefore: defaults.bool(forKey: accessibilityPromptKey)
+        ) {
+            defaults.set(true, forKey: accessibilityPromptKey)
+            _ = coordinator.windowSystem.requestAccessibilityPermission(prompt: true)
+        }
         coordinator.start()
-        _ = coordinator.windowSystem.requestAccessibilityPermission(prompt: true)
     }
 
     func applicationWillTerminate(_ notification: Notification) {

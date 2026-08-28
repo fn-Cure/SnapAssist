@@ -8,6 +8,8 @@
     <string>SnapAssist</string>
     <key>CFBundleIdentifier</key>
     <string>com.caner.snapassist</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon.icns</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -15,13 +17,15 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>0.2.0</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>2</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.productivity</string>
     <key>LSMinimumSystemVersion</key>
     <string>15.0</string>
+    <key>LSMultipleInstancesProhibited</key>
+    <true/>
     <key>LSUIElement</key>
     <true/>
     <key>NSHighResolutionCapable</key>
@@ -30,4 +34,3 @@
     <string>SnapAssist verwendet die Bildschirmaufnahme ausschließlich lokal, um Vorschaubilder offener Fenster im Auswahlfenster anzuzeigen.</string>
 </dict>
 </plist>
-

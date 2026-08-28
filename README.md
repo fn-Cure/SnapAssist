@@ -21,7 +21,7 @@ SnapAssist verarbeitet keine Fensterinhalte außerhalb des Macs und enthält kei
 
 ## Installation
 
-1. `SnapAssist.app` nach `/Applications` kopieren.
+1. `scripts/install-app.sh` ausführen; das Skript baut, signiert und installiert `/Applications/SnapAssist.app`.
 2. App öffnen; sie erscheint ausschließlich in der Menüleiste.
 3. Die angeforderte Bedienungshilfen-Berechtigung erteilen.
 4. Optional Bildschirmaufnahme erlauben und SnapAssist danach neu starten.
@@ -40,6 +40,7 @@ SnapAssist verarbeitet keine Fensterinhalte außerhalb des Macs und enthält kei
 swift test
 swift build
 scripts/build-app.sh
+scripts/install-app.sh
 ```
 
 Ein abweichender Ausgabeordner kann gesetzt werden:
@@ -48,10 +49,11 @@ Ein abweichender Ausgabeordner kann gesetzt werden:
 SNAPASSIST_OUTPUT_DIR=/vollständiger/pfad scripts/build-app.sh
 ```
 
+Das Build-Skript verwendet automatisch die erste verfügbare Apple-Development-Code-Signing-Identität und fällt andernfalls auf eine Ad-hoc-Signatur zurück. Eine bestimmte Identität kann über `SNAPASSIST_CODE_SIGN_IDENTITY` vorgegeben werden.
+
 ## Bewusste Grenzen des MVP
 
 - Es werden nur aktuell sichtbare Spaces berücksichtigt.
 - Layout-Gruppen werden beim Neustart nicht gespeichert.
 - Einzelne Apps können Accessibility-Größenänderungen ablehnen oder eigene Mindestgrößen erzwingen.
-- Die App ist lokal ad-hoc signiert, aber nicht für eine öffentliche Verteilung notarisiert.
-
+- Die installierte App wird mit dem lokal verfügbaren Apple-Development-Zertifikat signiert; ohne Zertifikat fällt der Build auf Ad-hoc zurück. Sie ist nicht für eine öffentliche Verteilung notarisiert.

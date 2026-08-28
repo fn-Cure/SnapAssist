@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 import SnapAssistCore
 
 final class AppCoordinator {
@@ -11,6 +12,7 @@ final class AppCoordinator {
     private(set) var groups: [String: LayoutGroup] = [:]
     private var debounceWorkItem: DispatchWorkItem?
     private var presentationGeneration = UUID()
+    private let logger = Logger(subsystem: "com.caner.snapassist", category: "Coordinator")
     private lazy var linkedResizeController = LinkedResizeController(
         windowSystem: windowSystem,
         groupsProvider: { [weak self] in self?.groups ?? [:] },
@@ -97,9 +99,11 @@ final class AppCoordinator {
                 screenFrame: screenFrame,
                 ownProcessID: ProcessInfo.processInfo.processIdentifier
               ) else {
+            logger.debug("Geometry event did not produce a supported snap for \(windowID, privacy: .public)")
             return
         }
 
+        logger.notice("Detected \(session.group.layout.kind.rawValue, privacy: .public) snap with \(session.emptyZoneIDs.count) empty zones and \(session.candidates.count) candidates")
         groups[trigger.screenID] = session.group
         activeSession = session
 
