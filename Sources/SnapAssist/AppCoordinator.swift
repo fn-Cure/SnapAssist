@@ -12,6 +12,8 @@ final class AppCoordinator {
     private var mutationLedger = WindowMutationLedger()
     private var pendingDetections: [String: DispatchWorkItem] = [:]
     private var thumbnailTask: Task<Void, Never>?
+    private var placementTask: Task<Void, Never>?
+    private var activeMutationWindowIDs: Set<String> = []
     private var thumbnailCache: [String: NSImage] = [:]
     private let logger = Logger(subsystem: "com.caner.snapassist", category: "Coordinator")
     private lazy var linkedResizeController = LinkedResizeController(
@@ -98,6 +100,7 @@ final class AppCoordinator {
         guard isEnabled else { return }
         switch event {
         case let .geometryChanged(windowID):
+            if activeMutationWindowIDs.contains(windowID) { return }
             if let actualFrame = windowSystem.frame(for: windowID),
                case .programmatic = mutationLedger.classify(
                 windowID: windowID,
@@ -185,23 +188,57 @@ final class AppCoordinator {
     }
 
     private func place(windowID: String, into zoneID: Int) {
-        guard var stagedSession = runtimeState.activeSession,
+        guard let originalSession = runtimeState.activeSession else { return }
+        var stagedSession = originalSession
+        guard
               let targetFrame = stagedSession.place(windowID: windowID, into: zoneID) else {
             return
         }
+
+        pickerController.dismiss(notify: false)
+        placementTask?.cancel()
+        placementTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.placementTask = nil }
+            await self.performPlacement(
+                originalSession: originalSession,
+                stagedSession: stagedSession,
+                windowID: windowID,
+                targetFrame: targetFrame
+            )
+        }
+    }
+
+    private func performPlacement(
+        originalSession: AssistSession,
+        stagedSession initialStagedSession: AssistSession,
+        windowID: String,
+        targetFrame: CGRect
+    ) async {
+        var stagedSession = initialStagedSession
 
         let operationID = UUID()
         mutationLedger.register(
             operationID: operationID,
             windowID: windowID,
             expectedFrame: targetFrame,
-            expiresAt: ProcessInfo.processInfo.systemUptime + 1.0
+            expiresAt: ProcessInfo.processInfo.systemUptime + 2.0
         )
-        let result = windowSystem.setFrame(targetFrame, for: windowID)
+        activeMutationWindowIDs.insert(windowID)
+        let result = await windowSystem.setFrame(targetFrame, for: windowID)
+        activeMutationWindowIDs.remove(windowID)
         guard result.succeeded, let verifiedFrame = result.frameAfter else {
             mutationLedger.cancel(windowID: windowID)
-            invalidateAll(reason: "picker placement failed verification")
-            NSSound.beep()
+            if runtimeState.activeSession == originalSession {
+                pickerController.present(session: originalSession, thumbnails: thumbnailCache)
+                pickerController.showError(
+                    result.rolledBack
+                        ? "Fenster konnte nicht platziert werden und wurde zurückgesetzt."
+                        : "Diese App hat die Fensterposition nicht vollständig übernommen."
+                )
+            } else {
+                invalidateAll(reason: "picker placement failed verification")
+            }
             return
         }
 
@@ -254,6 +291,9 @@ final class AppCoordinator {
         pendingDetections.removeAll()
         thumbnailTask?.cancel()
         thumbnailTask = nil
+        placementTask?.cancel()
+        placementTask = nil
+        activeMutationWindowIDs.removeAll()
         thumbnailCache.removeAll()
         mutationLedger.cancelAll()
         runtimeState.invalidateAll()

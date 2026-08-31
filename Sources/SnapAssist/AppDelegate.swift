@@ -5,11 +5,13 @@ import SnapAssistCore
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let accessibilityPromptKey = "hasRequestedAccessibilityPermission"
     private let coordinator = AppCoordinator()
+    private lazy var preferencesModel = AppPreferencesModel(coordinator: coordinator)
     private var statusItem: NSStatusItem?
-    private var isEnabled = true
-    private var linkedResizingEnabled = false
+    private var settingsWindowController: AppWindowController?
+    private var onboardingWindowController: AppWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        buildMainMenu()
         buildStatusMenu()
         let defaults = UserDefaults.standard
         if AccessibilityPromptPolicy.shouldPrompt(
@@ -20,6 +22,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             _ = coordinator.windowSystem.requestAccessibilityPermission(prompt: true)
         }
         coordinator.start()
+        preferencesModel.refresh()
+        if !preferencesModel.onboardingCompleted {
+            DispatchQueue.main.async { [weak self] in self?.showOnboarding() }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -38,6 +44,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem = item
     }
 
+    private func buildMainMenu() {
+        let mainMenu = NSMenu()
+        let appMenuItem = NSMenuItem()
+        let appMenu = NSMenu()
+        let settings = NSMenuItem(title: "Einstellungen…", action: #selector(showSettings), keyEquivalent: ",")
+        settings.target = self
+        appMenu.addItem(settings)
+        appMenu.addItem(.separator())
+        appMenu.addItem(NSMenuItem(
+            title: "SnapAssist beenden",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q"
+        ))
+        appMenuItem.submenu = appMenu
+        mainMenu.addItem(appMenuItem)
+        NSApplication.shared.mainMenu = mainMenu
+    }
+
     private func makeMenu() -> NSMenu {
         let menu = NSMenu()
         populate(menu)
@@ -47,7 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func populate(_ menu: NSMenu) {
         menu.removeAllItems()
         let toggle = NSMenuItem(
-            title: isEnabled ? "SnapAssist pausieren" : "SnapAssist aktivieren",
+            title: preferencesModel.isEnabled ? "SnapAssist pausieren" : "SnapAssist aktivieren",
             action: #selector(toggleEnabled),
             keyEquivalent: ""
         )
@@ -55,38 +79,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(toggle)
 
         let accessibility = NSMenuItem(
-            title: coordinator.windowSystem.isAccessibilityTrusted ? "Bedienungshilfen: erlaubt" : "Bedienungshilfen erlauben…",
+            title: preferencesModel.accessibilityTrusted ? "Bedienungshilfen: erlaubt" : "Bedienungshilfen erlauben…",
             action: #selector(openAccessibilitySettings),
             keyEquivalent: ""
         )
         accessibility.target = self
-        accessibility.isEnabled = !coordinator.windowSystem.isAccessibilityTrusted
+        accessibility.isEnabled = !preferencesModel.accessibilityTrusted
         menu.addItem(accessibility)
 
         let recording = NSMenuItem(
-            title: coordinator.windowSystem.hasScreenRecordingPermission ? "Bildschirmaufnahme: erlaubt" : "Bildschirmaufnahme erlauben…",
+            title: preferencesModel.screenRecordingGranted ? "Bildschirmaufnahme: erlaubt" : "Bildschirmaufnahme erlauben…",
             action: #selector(requestScreenRecording),
             keyEquivalent: ""
         )
         recording.target = self
-        recording.isEnabled = !coordinator.windowSystem.hasScreenRecordingPermission
+        recording.isEnabled = !preferencesModel.screenRecordingGranted
         menu.addItem(recording)
 
         let linkedResize = NSMenuItem(
-            title: linkedResizingEnabled && !coordinator.linkedResizeMonitorInstalled
+            title: preferencesModel.linkedResizingEnabled && !coordinator.linkedResizeMonitorInstalled
                 ? "Gekoppeltes Resize: Monitorfehler"
                 : "Gekoppeltes Resize (experimentell)",
             action: #selector(toggleLinkedResizing),
             keyEquivalent: ""
         )
         linkedResize.target = self
-        linkedResize.state = linkedResizingEnabled ? .on : .off
+        linkedResize.state = preferencesModel.linkedResizingEnabled ? .on : .off
         menu.addItem(linkedResize)
 
         let observerHealth = NSMenuItem(
-            title: coordinator.windowSystem.observerFailureCount == 0
-                ? "AX-Observer: bereit"
-                : "AX-Observer: \(coordinator.windowSystem.observerFailureCount) Fehler",
+            title: observerStatusTitle,
             action: nil,
             keyEquivalent: ""
         )
@@ -97,32 +119,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
+        let settings = NSMenuItem(title: "Einstellungen…", action: #selector(showSettings), keyEquivalent: ",")
+        settings.target = self
+        menu.addItem(settings)
+        let onboarding = NSMenuItem(title: "Einführung anzeigen…", action: #selector(showOnboarding), keyEquivalent: "")
+        onboarding.target = self
+        menu.addItem(onboarding)
+        menu.addItem(.separator())
         let quit = NSMenuItem(title: "SnapAssist beenden", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quit)
     }
 
     @objc private func toggleEnabled() {
-        isEnabled.toggle()
-        coordinator.isEnabled = isEnabled
+        preferencesModel.setEnabled(!preferencesModel.isEnabled)
         rebuildMenu()
     }
 
     @objc private func openAccessibilitySettings() {
-        coordinator.windowSystem.openAccessibilitySettings()
+        preferencesModel.openAccessibilitySettings()
     }
 
     @objc private func requestScreenRecording() {
-        coordinator.windowSystem.requestScreenRecordingPermission()
+        preferencesModel.requestScreenRecording()
         rebuildMenu()
     }
 
     @objc private func toggleLinkedResizing() {
-        linkedResizingEnabled.toggle()
-        coordinator.linkedResizingEnabled = linkedResizingEnabled
+        preferencesModel.setLinkedResizingEnabled(!preferencesModel.linkedResizingEnabled)
         rebuildMenu()
     }
 
+    @objc private func showSettings() {
+        if settingsWindowController == nil {
+            settingsWindowController = AppWindowController(kind: .settings, model: preferencesModel)
+        }
+        preferencesModel.refresh()
+        settingsWindowController?.show()
+    }
+
+    @objc private func showOnboarding() {
+        if onboardingWindowController == nil {
+            onboardingWindowController = AppWindowController(
+                kind: .onboarding,
+                model: preferencesModel
+            ) { [weak self] in
+                self?.onboardingWindowController?.close()
+            }
+        }
+        preferencesModel.refresh()
+        onboardingWindowController?.show()
+    }
+
     func menuNeedsUpdate(_ menu: NSMenu) {
+        preferencesModel.refresh()
         populate(menu)
     }
 
@@ -130,5 +179,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let menu = makeMenu()
         menu.delegate = self
         statusItem?.menu = menu
+    }
+
+    private var observerStatusTitle: String {
+        let degraded = coordinator.windowSystem.degradedObserverCount
+        let failures = coordinator.windowSystem.observerFailureCount
+        if degraded == 0 && failures == 0 { return "Fensterbeobachtung: bereit" }
+        if degraded > 0 && failures == 0 {
+            return "Fensterbeobachtung: \(degraded) App(s) im Fallback"
+        }
+        return "Fensterbeobachtung: \(failures) Fehler, \(degraded) Fallback"
     }
 }

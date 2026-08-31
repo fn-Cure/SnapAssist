@@ -1,0 +1,2 @@
+"CFBundleDisplayName" = "SnapAssist";
+"NSScreenCaptureUsageDescription" = "SnapAssist uses Screen Recording only on this Mac to show previews of visible windows in the picker. App icons and window titles remain available without permission.";

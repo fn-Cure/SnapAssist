@@ -11,6 +11,7 @@ final class PickerZoneModel: ObservableObject {
     let icons: [String: NSImage]
     @Published var active: Bool
     @Published var selectedCandidateID: String?
+    @Published var errorMessage: String?
 
     init(
         zoneID: Int,
@@ -28,6 +29,7 @@ final class PickerZoneModel: ObservableObject {
         self.icons = icons
         self.active = active
         self.selectedCandidateID = selectedCandidateID
+        self.errorMessage = nil
     }
 }
 
@@ -47,6 +49,13 @@ struct PickerZoneView: View {
                 Text("Esc")
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
+            }
+
+            if let errorMessage = model.errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .accessibilityLabel("Fehler: \(errorMessage)")
             }
 
             ScrollView {
@@ -203,6 +212,13 @@ final class PickerController {
         for model in models.values {
             model.thumbnails.merge(thumbnails) { _, new in new }
         }
+    }
+
+    func showError(_ message: String) {
+        for model in models.values {
+            model.errorMessage = message
+        }
+        NSSound.beep()
     }
 
     func dismiss(notify: Bool = true) {

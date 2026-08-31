@@ -8,6 +8,7 @@ let package = Package(
     products: [
         .library(name: "SnapAssistCore", targets: ["SnapAssistCore"]),
         .executable(name: "SnapAssist", targets: ["SnapAssist"]),
+        .executable(name: "SnapAssistFixture", targets: ["SnapAssistFixture"]),
     ],
     targets: [
         .target(name: "SnapAssistCore"),
@@ -16,6 +17,7 @@ let package = Package(
             dependencies: ["SnapAssistCore"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
+        .executableTarget(name: "SnapAssistFixture"),
         .testTarget(name: "SnapAssistCoreTests", dependencies: ["SnapAssistCore"]),
     ]
 )

@@ -1,0 +1,2 @@
+"CFBundleDisplayName" = "SnapAssist";
+"NSScreenCaptureUsageDescription" = "SnapAssist verwendet die Bildschirmaufnahme ausschließlich lokal, um Vorschaubilder sichtbarer Fenster im Auswahlfenster anzuzeigen. Ohne Freigabe funktionieren App-Symbole und Fenstertitel weiterhin.";
