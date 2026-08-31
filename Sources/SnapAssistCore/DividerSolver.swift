@@ -86,7 +86,7 @@ public enum DividerSolver {
         divider: SharedDivider,
         to proposedPosition: CGFloat,
         members: [LayoutMember]
-    ) -> [String: CGRect] {
+    ) -> [String: CGRect]? {
         let membersByID = Dictionary(uniqueKeysWithValues: members.map { ($0.id, $0) })
         let halfGap = divider.gap / 2
         var result = Dictionary(uniqueKeysWithValues: members.map { ($0.id, $0.frame) })
@@ -101,6 +101,7 @@ public enum DividerSolver {
                 guard let member = membersByID[id] else { return nil }
                 return member.frame.maxX - member.minimumSize.width - halfGap
             }.min() ?? proposedPosition
+            guard lowerBound <= upperBound else { return nil }
             let position = min(max(proposedPosition, lowerBound), upperBound)
 
             for id in divider.leadingWindowIDs {
@@ -127,6 +128,7 @@ public enum DividerSolver {
                 guard let member = membersByID[id] else { return nil }
                 return member.frame.maxY - member.minimumSize.height - halfGap
             }.min() ?? proposedPosition
+            guard lowerBound <= upperBound else { return nil }
             let position = min(max(proposedPosition, lowerBound), upperBound)
 
             for id in divider.leadingWindowIDs {
@@ -236,4 +238,3 @@ public enum DividerSolver {
         }
     }
 }
-

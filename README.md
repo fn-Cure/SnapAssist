@@ -33,6 +33,7 @@ SnapAssist verarbeitet keine Fensterinhalte außerhalb des Macs und enthält kei
 - Mit Tab zwischen freien Zielzonen wechseln.
 - Mit Escape oder einem Klick außerhalb abbrechen.
 - Bei vollständig belegten Layouts eine gemeinsame Fensterkante ziehen, um die gesamte Trennlinie anzupassen.
+- Gekoppeltes Resizing ist in Version 0.3 bewusst **experimentell und standardmäßig deaktiviert**. Es kann im Menü eingeschaltet werden und propagiert erst nach dem Loslassen der Maus.
 
 ## Entwicklung
 
@@ -49,7 +50,7 @@ Ein abweichender Ausgabeordner kann gesetzt werden:
 SNAPASSIST_OUTPUT_DIR=/vollständiger/pfad scripts/build-app.sh
 ```
 
-Das Build-Skript verwendet automatisch die erste verfügbare Apple-Development-Code-Signing-Identität und fällt andernfalls auf eine Ad-hoc-Signatur zurück. Eine bestimmte Identität kann über `SNAPASSIST_CODE_SIGN_IDENTITY` vorgegeben werden.
+Das Build-Skript verwendet automatisch die erste verfügbare Apple-Development-Code-Signing-Identität. Eine bestimmte Identität kann über `SNAPASSIST_CODE_SIGN_IDENTITY` vorgegeben werden. Ohne stabile Identität bricht der Build ab; nur eine explizite Entwicklungsfreigabe mit `SNAPASSIST_ALLOW_ADHOC=1` erlaubt eine Ad-hoc-Signatur.
 
 ## Bewusste Grenzen des MVP
 

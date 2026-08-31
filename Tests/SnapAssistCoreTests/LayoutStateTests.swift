@@ -108,15 +108,20 @@ final class LayoutStateTests: XCTestCase {
         XCTAssertEqual(session.group.members["trigger"], [0])
     }
 
-    func testEventGateSuppressesProgrammaticAndDuplicateEvents() {
-        var gate = WindowEventGate(cooldown: 1.0)
-        let frame = CGRect(x: 0, y: 0, width: 600, height: 800)
+    func testCandidateFilterExcludesModalAndFullScreenWindows() {
+        let windows = [
+            window(id: "normal", pid: 1),
+            window(id: "modal", pid: 2, isModal: true),
+            window(id: "fullScreen", pid: 3, isFullScreen: true),
+        ]
 
-        gate.suppress(windowID: "window", until: 10.5)
-        XCTAssertFalse(gate.shouldHandle(windowID: "window", frame: frame, at: 10.2))
-        XCTAssertTrue(gate.shouldHandle(windowID: "window", frame: frame, at: 10.6))
-        XCTAssertFalse(gate.shouldHandle(windowID: "window", frame: frame, at: 11.0))
-        XCTAssertTrue(gate.shouldHandle(windowID: "window", frame: frame, at: 11.7))
+        let candidates = CandidateFilter.eligibleWindows(
+            from: windows,
+            excluding: [],
+            ownProcessID: 999
+        )
+
+        XCTAssertEqual(candidates.map(\.id), ["normal"])
     }
 
     private func window(
@@ -128,7 +133,9 @@ final class LayoutStateTests: XCTestCase {
         isMovable: Bool = true,
         isResizable: Bool = true,
         isSystemWindow: Bool = false,
-        zOrder: Int = 0
+        zOrder: Int = 0,
+        isModal: Bool = false,
+        isFullScreen: Bool = false
     ) -> WindowDescriptor {
         WindowDescriptor(
             id: id,
@@ -141,7 +148,9 @@ final class LayoutStateTests: XCTestCase {
             isMinimized: isMinimized,
             isMovable: isMovable,
             isResizable: isResizable,
-            isSystemWindow: isSystemWindow
+            isSystemWindow: isSystemWindow,
+            isModal: isModal,
+            isFullScreen: isFullScreen
         )
     }
 }

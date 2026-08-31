@@ -2,39 +2,61 @@ import AppKit
 import OSLog
 import SnapAssistCore
 
+@MainActor
 final class AppCoordinator {
     let windowSystem: WindowSystem
 
     private let thumbnailProvider: ThumbnailProvider
     private let pickerController: PickerController
-    private var eventGate = WindowEventGate(cooldown: 1.0)
-    private var activeSession: AssistSession?
-    private(set) var groups: [String: LayoutGroup] = [:]
-    private var debounceWorkItem: DispatchWorkItem?
-    private var presentationGeneration = UUID()
+    private var runtimeState = SnapRuntimeState()
+    private var mutationLedger = WindowMutationLedger()
+    private var pendingDetections: [String: DispatchWorkItem] = [:]
+    private var thumbnailTask: Task<Void, Never>?
+    private var thumbnailCache: [String: NSImage] = [:]
     private let logger = Logger(subsystem: "com.caner.snapassist", category: "Coordinator")
     private lazy var linkedResizeController = LinkedResizeController(
         windowSystem: windowSystem,
-        groupsProvider: { [weak self] in self?.groups ?? [:] },
-        suppress: { [weak self] windowIDs in self?.suppressProgrammaticChanges(windowIDs) },
-        shouldIgnore: { [weak self] in self?.pickerController.isVisible ?? true }
+        groupsProvider: { [weak self] in self?.runtimeState.groups ?? [:] },
+        mutationRegistered: { [weak self] operationID, windowID, frame in
+            self?.mutationLedger.register(
+                operationID: operationID,
+                windowID: windowID,
+                expectedFrame: frame,
+                expiresAt: ProcessInfo.processInfo.systemUptime + 1.0
+            )
+        },
+        shouldIgnore: { [weak self] in self?.pickerController.isVisible ?? true },
+        onVerifiedFrames: { [weak self] screenID, frames in
+            self?.runtimeState.updateVerifiedFrames(screenID: screenID, frames: frames)
+        },
+        onFailure: { [weak self] in self?.invalidateAll(reason: "linked resize failed") }
     )
+
+    var groups: [String: LayoutGroup] { runtimeState.groups }
+    var linkedResizeMonitorInstalled: Bool { linkedResizeController.monitorInstalled }
 
     var isEnabled: Bool {
         get { windowSystem.isEnabled }
         set {
             windowSystem.isEnabled = newValue
-            if !newValue {
-                pickerController.dismiss(notify: false)
-                activeSession = nil
+            if newValue {
+                linkedResizeController.isEnabled = linkedResizingEnabled
+            } else {
+                invalidateAll(reason: "paused")
             }
         }
     }
 
+    var linkedResizingEnabled = false {
+        didSet {
+            linkedResizeController.isEnabled = linkedResizingEnabled && isEnabled
+        }
+    }
+
     init(
-        windowSystem: WindowSystem = WindowSystem(),
-        thumbnailProvider: ThumbnailProvider = ThumbnailProvider(),
-        pickerController: PickerController = PickerController()
+        windowSystem: WindowSystem,
+        thumbnailProvider: ThumbnailProvider,
+        pickerController: PickerController
     ) {
         self.windowSystem = windowSystem
         self.thumbnailProvider = thumbnailProvider
@@ -43,21 +65,31 @@ final class AppCoordinator {
             self?.place(windowID: windowID, into: zoneID)
         }
         pickerController.onCancel = { [weak self] in
-            self?.activeSession = nil
+            guard let self else { return }
+            self.thumbnailTask?.cancel()
+            self.thumbnailTask = nil
+            self.runtimeState.cancelSession(removeIncompleteGroup: true)
         }
+    }
+
+    convenience init() {
+        self.init(
+            windowSystem: WindowSystem(),
+            thumbnailProvider: ThumbnailProvider(),
+            pickerController: PickerController()
+        )
     }
 
     func start() {
         windowSystem.onEvent = { [weak self] event in
-            self?.handle(event)
+            Task { @MainActor in self?.handle(event) }
         }
         windowSystem.start()
-        linkedResizeController.start()
+        linkedResizeController.isEnabled = linkedResizingEnabled
     }
 
     func stop() {
-        debounceWorkItem?.cancel()
-        pickerController.dismiss(notify: false)
+        invalidateAll(reason: "stopping")
         linkedResizeController.stop()
         windowSystem.stop()
     }
@@ -66,20 +98,41 @@ final class AppCoordinator {
         guard isEnabled else { return }
         switch event {
         case let .geometryChanged(windowID):
+            if let actualFrame = windowSystem.frame(for: windowID),
+               case .programmatic = mutationLedger.classify(
+                windowID: windowID,
+                actualFrame: actualFrame,
+                at: ProcessInfo.processInfo.systemUptime
+               ) {
+                return
+            }
+            invalidate(windowID: windowID, dismissPicker: true)
             scheduleSnapDetection(windowID: windowID)
         case .inventoryChanged:
-            validateGroups()
+            reconcileRuntime()
+        case .environmentChanged:
+            invalidateAll(reason: "environment changed")
         case .focusChanged:
             break
         }
     }
 
     private func scheduleSnapDetection(windowID: String) {
-        debounceWorkItem?.cancel()
-        let item = DispatchWorkItem { [weak self] in
-            self?.detectSnap(windowID: windowID)
+        pendingDetections[windowID]?.cancel()
+        var item: DispatchWorkItem!
+        item = DispatchWorkItem { [weak self] in
+            guard let self, !item.isCancelled,
+                  let firstFrame = self.windowSystem.frame(for: windowID) else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { [weak self] in
+                guard let self, self.pendingDetections[windowID] === item else { return }
+                defer { self.pendingDetections.removeValue(forKey: windowID) }
+                guard !item.isCancelled,
+                      let settledFrame = self.windowSystem.frame(for: windowID),
+                      firstFrame.isApproximatelyEqual(to: settledFrame, tolerance: 2) else { return }
+                self.detectSnap(windowID: windowID)
+            }
         }
-        debounceWorkItem = item
+        pendingDetections[windowID] = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: item)
     }
 
@@ -87,11 +140,6 @@ final class AppCoordinator {
         let windows = windowSystem.visibleWindows()
         guard let trigger = windows.first(where: { $0.id == windowID }),
               let screenFrame = windowSystem.screenFrame(for: trigger.screenID),
-              eventGate.shouldHandle(
-                windowID: trigger.id,
-                frame: trigger.frame,
-                at: ProcessInfo.processInfo.systemUptime
-              ),
               let session = LayoutStateBuilder.buildSession(
                 trigger: trigger,
                 windowsOnTargetScreen: windows.filter { $0.screenID == trigger.screenID },
@@ -99,84 +147,117 @@ final class AppCoordinator {
                 screenFrame: screenFrame,
                 ownProcessID: ProcessInfo.processInfo.processIdentifier
               ) else {
+            invalidate(windowID: windowID, dismissPicker: true)
             logger.debug("Geometry event did not produce a supported snap for \(windowID, privacy: .public)")
             return
         }
 
         logger.notice("Detected \(session.group.layout.kind.rawValue, privacy: .public) snap with \(session.emptyZoneIDs.count) empty zones and \(session.candidates.count) candidates")
-        groups[trigger.screenID] = session.group
-        activeSession = session
+        let generation = runtimeState.install(session)
+        thumbnailTask?.cancel()
+        thumbnailCache = thumbnailCache.filter { id, _ in session.candidates.contains(where: { $0.id == id }) }
 
         guard !session.emptyZoneIDs.isEmpty, !session.candidates.isEmpty else {
             pickerController.dismiss(notify: false)
+            runtimeState.cancelSession(removeIncompleteGroup: true)
             return
         }
 
-        let generation = UUID()
-        presentationGeneration = generation
-        Task { [weak self] in
+        pickerController.present(session: session, thumbnails: thumbnailCache)
+        loadThumbnails(for: session, generation: generation)
+    }
+
+    private func loadThumbnails(for session: AssistSession, generation: UInt64) {
+        let missingCandidates = session.candidates.filter { thumbnailCache[$0.id] == nil }
+        guard !missingCandidates.isEmpty else { return }
+        thumbnailTask?.cancel()
+        thumbnailTask = Task { [weak self] in
             guard let self else { return }
-            let thumbnails = await thumbnailProvider.thumbnails(for: session.candidates)
+            let thumbnails = await thumbnailProvider.thumbnails(for: missingCandidates)
+            guard !Task.isCancelled else { return }
             await MainActor.run {
-                guard self.presentationGeneration == generation,
-                      self.activeSession?.group == session.group else { return }
-                self.pickerController.present(session: session, thumbnails: thumbnails)
+                guard self.runtimeState.isCurrentPresentation(generation),
+                      self.runtimeState.activeSession?.group == session.group else { return }
+                self.thumbnailCache.merge(thumbnails) { _, new in new }
+                self.pickerController.updateThumbnails(thumbnails)
             }
         }
     }
 
     private func place(windowID: String, into zoneID: Int) {
-        guard var session = activeSession,
-              let targetFrame = session.place(windowID: windowID, into: zoneID) else {
+        guard var stagedSession = runtimeState.activeSession,
+              let targetFrame = stagedSession.place(windowID: windowID, into: zoneID) else {
             return
         }
 
-        eventGate.suppress(
+        let operationID = UUID()
+        mutationLedger.register(
+            operationID: operationID,
             windowID: windowID,
-            until: ProcessInfo.processInfo.systemUptime + 0.8
+            expectedFrame: targetFrame,
+            expiresAt: ProcessInfo.processInfo.systemUptime + 1.0
         )
-        guard windowSystem.setFrame(targetFrame, for: windowID) else {
+        let result = windowSystem.setFrame(targetFrame, for: windowID)
+        guard result.succeeded, let verifiedFrame = result.frameAfter else {
+            mutationLedger.cancel(windowID: windowID)
+            invalidateAll(reason: "picker placement failed verification")
             NSSound.beep()
             return
         }
 
+        stagedSession.group.verifiedFrames[windowID] = verifiedFrame
+        let generation = runtimeState.install(stagedSession)
         _ = windowSystem.raise(windowID: windowID)
-        activeSession = session
-        groups[session.group.screenID] = session.group
 
-        if session.emptyZoneIDs.isEmpty || session.candidates.isEmpty {
+        if stagedSession.emptyZoneIDs.isEmpty || stagedSession.candidates.isEmpty {
             pickerController.dismiss(notify: false)
-            activeSession = nil
+            runtimeState.cancelSession(removeIncompleteGroup: true)
+            thumbnailTask?.cancel()
+            thumbnailTask = nil
         } else {
-            let updatedSession = session
-            Task { [weak self] in
-                guard let self else { return }
-                let thumbnails = await thumbnailProvider.thumbnails(for: updatedSession.candidates)
-                await MainActor.run {
-                    guard self.activeSession == updatedSession else { return }
-                    self.pickerController.present(session: updatedSession, thumbnails: thumbnails)
-                }
-            }
+            thumbnailCache = thumbnailCache.filter { id, _ in stagedSession.candidates.contains(where: { $0.id == id }) }
+            pickerController.present(session: stagedSession, thumbnails: thumbnailCache)
+            loadThumbnails(for: stagedSession, generation: generation)
         }
     }
 
-    private func validateGroups() {
+    private func reconcileRuntime() {
         let windows = windowSystem.visibleWindows()
-        let ids = Set(windows.map(\.id))
-        groups = groups.filter { _, group in
-            Set(group.members.keys).isSubset(of: ids)
+        let previousSession = runtimeState.activeSession
+        runtimeState.reconcile(with: windows)
+        guard let session = runtimeState.activeSession else {
+            if previousSession != nil {
+                thumbnailTask?.cancel()
+                thumbnailTask = nil
+                pickerController.dismiss(notify: false)
+            }
+            return
         }
-        if let session = activeSession,
-           !Set(session.group.members.keys).isSubset(of: ids) {
-            pickerController.dismiss(notify: false)
-            activeSession = nil
+        if previousSession != session, pickerController.isVisible {
+            pickerController.present(session: session, thumbnails: thumbnailCache)
         }
     }
 
-    private func suppressProgrammaticChanges(_ windowIDs: [String]) {
-        let deadline = ProcessInfo.processInfo.systemUptime + 1.0
-        for windowID in windowIDs {
-            eventGate.suppress(windowID: windowID, until: deadline)
+    private func invalidate(windowID: String, dismissPicker: Bool) {
+        mutationLedger.cancel(windowID: windowID)
+        runtimeState.invalidate(windowID: windowID)
+        if dismissPicker {
+            thumbnailTask?.cancel()
+            thumbnailTask = nil
+            pickerController.dismiss(notify: false)
         }
+    }
+
+    private func invalidateAll(reason: String) {
+        logger.notice("Invalidating volatile state: \(reason, privacy: .public)")
+        pendingDetections.values.forEach { $0.cancel() }
+        pendingDetections.removeAll()
+        thumbnailTask?.cancel()
+        thumbnailTask = nil
+        thumbnailCache.removeAll()
+        mutationLedger.cancelAll()
+        runtimeState.invalidateAll()
+        pickerController.dismiss(notify: false)
+        linkedResizeController.cancelActiveDrag()
     }
 }

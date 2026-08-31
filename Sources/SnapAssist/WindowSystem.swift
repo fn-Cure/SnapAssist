@@ -14,16 +14,38 @@ enum WindowSystemEvent {
     case geometryChanged(windowID: String)
     case inventoryChanged
     case focusChanged
+    case environmentChanged
 }
 
+enum WindowMutationVerification: String {
+    case verified
+    case clamped
+    case failed
+    case unavailable
+}
+
+struct WindowMutationResult {
+    let requestedFrame: CGRect
+    let frameBefore: CGRect?
+    let frameAfter: CGRect?
+    let sizeErrors: [AXError]
+    let positionError: AXError?
+    let verification: WindowMutationVerification
+
+    var succeeded: Bool { verification == .verified }
+}
+
+@MainActor
 final class WindowSystem {
     private final class WindowRecord {
         let id: String
+        let cgWindowID: CGWindowID
         let processID: pid_t
         let element: AXUIElement
 
-        init(id: String, processID: pid_t, element: AXUIElement) {
+        init(id: String, cgWindowID: CGWindowID, processID: pid_t, element: AXUIElement) {
             self.id = id
+            self.cgWindowID = cgWindowID
             self.processID = processID
             self.element = element
         }
@@ -35,7 +57,12 @@ final class WindowSystem {
     private var records: [String: WindowRecord] = [:]
     private var observers: [pid_t: AXObserver] = [:]
     private var workspaceObservers: [NSObjectProtocol] = []
+    private var notificationObservers: [NSObjectProtocol] = []
+    private var permissionTimer: Timer?
+    private var lastAccessibilityTrust = AXIsProcessTrusted()
     private let logger = Logger(subsystem: "com.caner.snapassist", category: "WindowSystem")
+    private(set) var observerFailureCount = 0
+    private(set) var lastMutationFailureDescription: String?
 
     var isAccessibilityTrusted: Bool {
         AXIsProcessTrusted()
@@ -72,28 +99,79 @@ final class WindowSystem {
             NSWorkspace.didLaunchApplicationNotification,
             NSWorkspace.didTerminateApplicationNotification,
             NSWorkspace.didActivateApplicationNotification,
+            NSWorkspace.didHideApplicationNotification,
+            NSWorkspace.didUnhideApplicationNotification,
         ] {
             workspaceObservers.append(center.addObserver(
                 forName: name,
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                self?.refreshObservers()
-                self?.onEvent?(.inventoryChanged)
+                Task { @MainActor in
+                    self?.refreshObservers()
+                    self?.onEvent?(.inventoryChanged)
+                }
             })
         }
+        for name in [
+            NSWorkspace.activeSpaceDidChangeNotification,
+            NSWorkspace.didWakeNotification,
+            NSWorkspace.sessionDidBecomeActiveNotification,
+            NSWorkspace.sessionDidResignActiveNotification,
+        ] {
+            workspaceObservers.append(center.addObserver(
+                forName: name,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.onEvent?(.environmentChanged) }
+            })
+        }
+        notificationObservers.append(NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.onEvent?(.environmentChanged) }
+        })
         refreshObservers()
+        permissionTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshAccessibilityState() }
+        }
     }
 
     func stop() {
         let center = NSWorkspace.shared.notificationCenter
         workspaceObservers.forEach(center.removeObserver)
         workspaceObservers.removeAll()
+        notificationObservers.forEach(NotificationCenter.default.removeObserver)
+        notificationObservers.removeAll()
+        permissionTimer?.invalidate()
+        permissionTimer = nil
         for observer in observers.values {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
         }
         observers.removeAll()
         records.removeAll()
+    }
+
+    func refreshAccessibilityState() {
+        let trusted = isAccessibilityTrusted
+        guard trusted != lastAccessibilityTrust else {
+            if trusted && observers.isEmpty { refreshObservers() }
+            return
+        }
+        lastAccessibilityTrust = trusted
+        if trusted {
+            refreshObservers()
+        } else {
+            for observer in observers.values {
+                CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+            }
+            observers.removeAll()
+            records.removeAll()
+        }
+        onEvent?(.environmentChanged)
     }
 
     func visibleWindows() -> [WindowDescriptor] {
@@ -108,6 +186,7 @@ final class WindowSystem {
 
         for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular && !app.isTerminated {
             let appElement = AXUIElementCreateApplication(app.processIdentifier)
+            var claimedWindowIDs: Set<CGWindowID> = []
             for window in windows(of: appElement) {
                 guard let cocoaFrame = frame(of: window),
                       let screen = screen(containing: cocoaFrame),
@@ -115,15 +194,19 @@ final class WindowSystem {
                         processID: app.processIdentifier,
                         title: stringAttribute(kAXTitleAttribute, of: window) ?? "",
                         frame: cocoaFrame,
-                        candidates: onscreen
+                        candidates: onscreen.filter { !claimedWindowIDs.contains($0.windowID) }
                       ) else {
                     continue
                 }
 
-                let id = windowID(processID: app.processIdentifier, element: window)
+                claimedWindowIDs.insert(metadata.windowID)
+                let id = windowID(processID: app.processIdentifier, cgWindowID: metadata.windowID)
                 let minimized = boolAttribute(kAXMinimizedAttribute, of: window) ?? false
+                let modal = boolAttribute(kAXModalAttribute, of: window) ?? false
+                let fullScreen = boolAttribute("AXFullScreen", of: window) ?? false
                 let descriptor = WindowDescriptor(
                     id: id,
+                    cgWindowID: metadata.windowID,
                     processID: app.processIdentifier,
                     appName: app.localizedName ?? "Unbekannte App",
                     title: stringAttribute(kAXTitleAttribute, of: window) ?? app.localizedName ?? "Fenster",
@@ -133,10 +216,17 @@ final class WindowSystem {
                     isMinimized: minimized,
                     isMovable: isAttributeSettable(kAXPositionAttribute, of: window),
                     isResizable: isAttributeSettable(kAXSizeAttribute, of: window),
-                    isSystemWindow: !isStandardWindow(window)
+                    isSystemWindow: !isStandardWindow(window),
+                    isModal: modal,
+                    isFullScreen: fullScreen
                 )
                 descriptors.append(descriptor)
-                nextRecords[id] = WindowRecord(id: id, processID: app.processIdentifier, element: window)
+                nextRecords[id] = WindowRecord(
+                    id: id,
+                    cgWindowID: metadata.windowID,
+                    processID: app.processIdentifier,
+                    element: window
+                )
             }
         }
 
@@ -149,7 +239,12 @@ final class WindowSystem {
         guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
         guard let window: AXUIElement = attribute(kAXFocusedWindowAttribute, of: appElement) else { return nil }
-        return windowID(processID: app.processIdentifier, element: window)
+        if let record = records.values.first(where: {
+            $0.processID == app.processIdentifier && CFEqual($0.element, window)
+        }) {
+            return record.id
+        }
+        return resolveWindowID(processID: app.processIdentifier, element: window)
     }
 
     func frame(for windowID: String) -> CGRect? {
@@ -158,8 +253,21 @@ final class WindowSystem {
     }
 
     @discardableResult
-    func setFrame(_ cocoaFrame: CGRect, for windowID: String) -> Bool {
-        guard let record = records[windowID] else { return false }
+    func setFrame(_ cocoaFrame: CGRect, for windowID: String) -> WindowMutationResult {
+        guard let record = records[windowID] else {
+            let result = WindowMutationResult(
+                requestedFrame: cocoaFrame,
+                frameBefore: nil,
+                frameAfter: nil,
+                sizeErrors: [],
+                positionError: nil,
+                verification: .unavailable
+            )
+            lastMutationFailureDescription = "Fenster ist nicht mehr verfügbar"
+            return result
+        }
+        let frameBefore = frame(of: record.element)
+        _ = AXUIElementSetMessagingTimeout(record.element, 0.25)
         let axFrame = ScreenCoordinateConverter.cocoaToAX(
             cocoaFrame,
             primaryScreenHeight: primaryScreenHeight
@@ -168,13 +276,51 @@ final class WindowSystem {
         var size = axFrame.size
         guard let pointValue = AXValueCreate(.cgPoint, &point),
               let sizeValue = AXValueCreate(.cgSize, &size) else {
-            return false
+            let result = WindowMutationResult(
+                requestedFrame: cocoaFrame,
+                frameBefore: frameBefore,
+                frameAfter: frameBefore,
+                sizeErrors: [.illegalArgument],
+                positionError: .illegalArgument,
+                verification: .failed
+            )
+            lastMutationFailureDescription = "AX-Werte konnten nicht erzeugt werden"
+            return result
         }
 
-        let sizeResult = AXUIElementSetAttributeValue(record.element, kAXSizeAttribute as CFString, sizeValue)
-        let positionResult = AXUIElementSetAttributeValue(record.element, kAXPositionAttribute as CFString, pointValue)
+        var sizeErrors: [AXError] = []
+        var positionError: AXError?
+        if frameBefore?.size.isApproximatelyEqual(to: cocoaFrame.size, tolerance: 1) != true {
+            let result = AXUIElementSetAttributeValue(record.element, kAXSizeAttribute as CFString, sizeValue)
+            if result != .success { sizeErrors.append(result) }
+        }
+        if frameBefore?.origin.isApproximatelyEqual(to: cocoaFrame.origin, tolerance: 1) != true {
+            let result = AXUIElementSetAttributeValue(record.element, kAXPositionAttribute as CFString, pointValue)
+            if result != .success { positionError = result }
+        }
         let finalSizeResult = AXUIElementSetAttributeValue(record.element, kAXSizeAttribute as CFString, sizeValue)
-        return sizeResult == .success && positionResult == .success && finalSizeResult == .success
+        if finalSizeResult != .success { sizeErrors.append(finalSizeResult) }
+
+        let frameAfter = frame(of: record.element)
+        let verification: WindowMutationVerification
+        if frameAfter?.isApproximatelyEqual(to: cocoaFrame, tolerance: 4) == true {
+            verification = .verified
+            lastMutationFailureDescription = nil
+        } else if frameAfter != nil && sizeErrors.isEmpty && positionError == nil {
+            verification = .clamped
+            lastMutationFailureDescription = "Ziel-App hat die Fenstergröße begrenzt"
+        } else {
+            verification = .failed
+            lastMutationFailureDescription = "AX-Frameänderung fehlgeschlagen"
+        }
+        return WindowMutationResult(
+            requestedFrame: cocoaFrame,
+            frameBefore: frameBefore,
+            frameAfter: frameAfter,
+            sizeErrors: sizeErrors,
+            positionError: positionError,
+            verification: verification
+        )
     }
 
     @discardableResult
@@ -255,7 +401,11 @@ final class WindowSystem {
             || notificationName == kAXResizedNotification as String {
             var processID: pid_t = 0
             AXUIElementGetPid(element, &processID)
-            onEvent?(.geometryChanged(windowID: windowID(processID: processID, element: element)))
+            guard let windowID = resolveWindowID(processID: processID, element: element) else {
+                onEvent?(.inventoryChanged)
+                return
+            }
+            onEvent?(.geometryChanged(windowID: windowID))
         } else if notificationName == kAXFocusedWindowChangedNotification as String {
             onEvent?(.focusChanged)
         } else {
@@ -277,7 +427,11 @@ final class WindowSystem {
 
     private func add(notification: String, element: AXUIElement, observer: AXObserver) {
         let refcon = Unmanaged.passUnretained(self).toOpaque()
-        _ = AXObserverAddNotification(observer, element, notification as CFString, refcon)
+        let result = AXObserverAddNotification(observer, element, notification as CFString, refcon)
+        if result != .success && result != .notificationAlreadyRegistered && result != .notificationUnsupported {
+            observerFailureCount += 1
+            logger.error("AXObserverAddNotification failed for \(notification, privacy: .public) with code \(result.rawValue)")
+        }
     }
 
     private func windows(of appElement: AXUIElement) -> [AXUIElement] {
@@ -314,14 +468,39 @@ final class WindowSystem {
         return screen.localizedName
     }
 
-    private func windowID(processID: pid_t, element: AXUIElement) -> String {
-        "\(processID):\(CFHash(element))"
+    private func windowID(processID: pid_t, cgWindowID: CGWindowID) -> String {
+        "\(processID):\(cgWindowID)"
+    }
+
+    private func resolveWindowID(processID: pid_t, element: AXUIElement) -> String? {
+        if let record = records.values.first(where: {
+            $0.processID == processID && CFEqual($0.element, element)
+        }) {
+            return record.id
+        }
+        guard let frame = frame(of: element),
+              let metadata = bestMetadata(
+                processID: processID,
+                title: stringAttribute(kAXTitleAttribute, of: element) ?? "",
+                frame: frame,
+                candidates: onscreenWindowMetadata()
+              ) else {
+            return nil
+        }
+        let id = windowID(processID: processID, cgWindowID: metadata.windowID)
+        records[id] = WindowRecord(
+            id: id,
+            cgWindowID: metadata.windowID,
+            processID: processID,
+            element: element
+        )
+        return id
     }
 
     private func isStandardWindow(_ element: AXUIElement) -> Bool {
         guard stringAttribute(kAXRoleAttribute, of: element) == kAXWindowRole else { return false }
         let subrole = stringAttribute(kAXSubroleAttribute, of: element)
-        return subrole == nil || subrole == kAXStandardWindowSubrole || subrole == kAXDialogSubrole
+        return subrole == kAXStandardWindowSubrole
     }
 
     private func isAttributeSettable(_ name: String, of element: AXUIElement) -> Bool {
@@ -346,6 +525,7 @@ final class WindowSystem {
     }
 
     private struct WindowMetadata {
+        let windowID: CGWindowID
         let processID: pid_t
         let title: String
         let frame: CGRect
@@ -362,12 +542,16 @@ final class WindowSystem {
 
         return info.enumerated().compactMap { index, dictionary in
             guard let ownerPID = dictionary[kCGWindowOwnerPID] as? NSNumber,
+                  let windowNumber = dictionary[kCGWindowNumber] as? NSNumber,
+                  let layer = dictionary[kCGWindowLayer] as? NSNumber,
+                  layer.intValue == 0,
                   let boundsValue = dictionary[kCGWindowBounds] else {
                 return nil
             }
             let boundsDictionary = boundsValue as! CFDictionary
             guard let axBounds = CGRect(dictionaryRepresentation: boundsDictionary) else { return nil }
             return WindowMetadata(
+                windowID: CGWindowID(windowNumber.uint32Value),
                 processID: ownerPID.int32Value,
                 title: dictionary[kCGWindowName] as? String ?? "",
                 frame: ScreenCoordinateConverter.axToCocoa(
@@ -385,9 +569,20 @@ final class WindowSystem {
         frame: CGRect,
         candidates: [WindowMetadata]
     ) -> WindowMetadata? {
-        candidates.filter { $0.processID == processID }.min { lhs, rhs in
-            metadataScore(lhs, title: title, frame: frame) < metadataScore(rhs, title: title, frame: frame)
-        }.flatMap { metadataScore($0, title: title, frame: frame) <= 120 ? $0 : nil }
+        let processCandidates = candidates.filter { $0.processID == processID }
+        let scored: [(metadata: WindowMetadata, score: CGFloat)] = processCandidates.map { candidate in
+            (candidate, metadataScore(candidate, title: title, frame: frame))
+        }
+        let ranked = scored.sorted { lhs, rhs in
+            if lhs.score == rhs.score { return lhs.metadata.zOrder < rhs.metadata.zOrder }
+            return lhs.score < rhs.score
+        }
+        guard let best = ranked.first, best.score <= 120 else { return nil }
+        if ranked.count > 1, ranked[1].score - best.score < 4 {
+            logger.debug("Skipping ambiguous AX/CG window match for pid \(processID)")
+            return nil
+        }
+        return best.metadata
     }
 
     private func metadataScore(_ metadata: WindowMetadata, title: String, frame: CGRect) -> CGFloat {
@@ -413,7 +608,9 @@ private func windowSystemObserverCallback(
 ) {
     guard let refcon else { return }
     let system = Unmanaged<WindowSystem>.fromOpaque(refcon).takeUnretainedValue()
-    system.handle(notification: notification, element: element)
+    Task { @MainActor in
+        system.handle(notification: notification, element: element)
+    }
 }
 
 private extension CGRect {

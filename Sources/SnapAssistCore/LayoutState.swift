@@ -3,6 +3,7 @@ import Foundation
 
 public struct WindowDescriptor: Equatable, Sendable, Identifiable {
     public let id: String
+    public let cgWindowID: UInt32?
     public let processID: Int32
     public let appName: String
     public let title: String
@@ -14,9 +15,12 @@ public struct WindowDescriptor: Equatable, Sendable, Identifiable {
     public let isResizable: Bool
     public let isSystemWindow: Bool
     public let isOnVisibleSpace: Bool
+    public let isModal: Bool
+    public let isFullScreen: Bool
 
     public init(
         id: String,
+        cgWindowID: UInt32? = nil,
         processID: Int32,
         appName: String,
         title: String,
@@ -27,9 +31,12 @@ public struct WindowDescriptor: Equatable, Sendable, Identifiable {
         isMovable: Bool,
         isResizable: Bool,
         isSystemWindow: Bool,
-        isOnVisibleSpace: Bool = true
+        isOnVisibleSpace: Bool = true,
+        isModal: Bool = false,
+        isFullScreen: Bool = false
     ) {
         self.id = id
+        self.cgWindowID = cgWindowID
         self.processID = processID
         self.appName = appName
         self.title = title
@@ -41,6 +48,8 @@ public struct WindowDescriptor: Equatable, Sendable, Identifiable {
         self.isResizable = isResizable
         self.isSystemWindow = isSystemWindow
         self.isOnVisibleSpace = isOnVisibleSpace
+        self.isModal = isModal
+        self.isFullScreen = isFullScreen
     }
 }
 
@@ -56,6 +65,8 @@ public enum CandidateFilter {
                 && window.isOnVisibleSpace
                 && !window.isMinimized
                 && !window.isSystemWindow
+                && !window.isModal
+                && !window.isFullScreen
                 && window.isMovable
                 && window.isResizable
                 && window.frame.width >= 80
@@ -73,11 +84,24 @@ public struct LayoutGroup: Equatable, Sendable {
     public let screenID: String
     public let layout: LayoutGeometry
     public var members: [String: [Int]]
+    public var verifiedFrames: [String: CGRect]
 
-    public init(screenID: String, layout: LayoutGeometry, members: [String: [Int]]) {
+    public var isComplete: Bool {
+        let zones = members.values.flatMap { $0 }
+        return zones.count == Set(zones).count
+            && Set(zones) == Set(layout.zoneFrames.indices)
+    }
+
+    public init(
+        screenID: String,
+        layout: LayoutGeometry,
+        members: [String: [Int]],
+        verifiedFrames: [String: CGRect] = [:]
+    ) {
         self.screenID = screenID
         self.layout = layout
         self.members = members
+        self.verifiedFrames = verifiedFrames
     }
 }
 
@@ -97,6 +121,7 @@ public struct AssistSession: Equatable, Sendable {
         }
 
         group.members[windowID] = [zoneID]
+        group.verifiedFrames[windowID] = group.layout.zoneFrames[zoneID]
         candidates.remove(at: candidateIndex)
         return group.layout.zoneFrames[zoneID]
     }
@@ -148,45 +173,19 @@ public enum LayoutStateBuilder {
             ownProcessID: ownProcessID
         )
 
+        let framesByID = Dictionary(uniqueKeysWithValues: sortedTargetWindows.map { ($0.id, $0.frame) })
+        let verifiedFrames = Dictionary(uniqueKeysWithValues: members.keys.compactMap { id in
+            framesByID[id].map { (id, $0) }
+        })
+
         return AssistSession(
-            group: LayoutGroup(screenID: trigger.screenID, layout: match.layout, members: members),
+            group: LayoutGroup(
+                screenID: trigger.screenID,
+                layout: match.layout,
+                members: members,
+                verifiedFrames: verifiedFrames
+            ),
             candidates: candidates
         )
-    }
-}
-
-public struct WindowEventGate: Sendable {
-    public let cooldown: TimeInterval
-    private var suppressions: [String: TimeInterval] = [:]
-    private var lastHandled: [String: (frame: CGRect, timestamp: TimeInterval)] = [:]
-
-    public init(cooldown: TimeInterval = 1.0) {
-        self.cooldown = cooldown
-    }
-
-    public mutating func suppress(windowID: String, until timestamp: TimeInterval) {
-        suppressions[windowID] = timestamp
-    }
-
-    public mutating func shouldHandle(
-        windowID: String,
-        frame: CGRect,
-        at timestamp: TimeInterval
-    ) -> Bool {
-        if let suppressedUntil = suppressions[windowID] {
-            if timestamp < suppressedUntil {
-                return false
-            }
-            suppressions.removeValue(forKey: windowID)
-        }
-
-        if let previous = lastHandled[windowID],
-           previous.frame == frame,
-           timestamp - previous.timestamp < cooldown {
-            return false
-        }
-
-        lastHandled[windowID] = (frame, timestamp)
-        return true
     }
 }

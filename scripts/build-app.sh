@@ -35,7 +35,13 @@ if [[ -z "$signing_identity" ]]; then
     | awk -F '"' '/Apple Development/ { print $2; exit }')"
 fi
 if [[ -z "$signing_identity" ]]; then
-  signing_identity="-"
+  if [[ "${SNAPASSIST_ALLOW_ADHOC:-0}" == "1" ]]; then
+    signing_identity="-"
+  else
+    echo "No stable Apple Development signing identity found." >&2
+    echo "Set SNAPASSIST_CODE_SIGN_IDENTITY or explicitly allow ad-hoc signing with SNAPASSIST_ALLOW_ADHOC=1." >&2
+    exit 1
+  fi
 fi
 
 codesign \
@@ -46,5 +52,10 @@ codesign \
   "$app_path"
 codesign --verify --deep --strict --verbose=2 "$app_path"
 
+designated_requirement="$(codesign -d -r- "$app_path" 2>&1 | sed -n 's/^designated => //p')"
+cdhash="$(codesign -dvvv "$app_path" 2>&1 | sed -n 's/^CDHash=//p' | head -n 1)"
+
 echo "Signed with: $signing_identity"
+echo "Designated requirement: $designated_requirement"
+echo "CDHash: $cdhash"
 echo "$app_path"

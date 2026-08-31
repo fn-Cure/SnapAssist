@@ -15,13 +15,14 @@ final class ThumbnailProvider {
             var result: [String: NSImage] = [:]
 
             for descriptor in windows {
+                if Task.isCancelled { return result }
                 guard let captureWindow = bestMatch(for: descriptor, in: content.windows) else { continue }
                 let filter = SCContentFilter(desktopIndependentWindow: captureWindow)
                 let configuration = SCStreamConfiguration()
                 let targetWidth = 360
                 let aspectRatio = max(0.3, captureWindow.frame.height / max(captureWindow.frame.width, 1))
                 configuration.width = targetWidth
-                configuration.height = max(120, Int(CGFloat(targetWidth) * aspectRatio))
+                configuration.height = min(300, max(120, Int(CGFloat(targetWidth) * aspectRatio)))
                 configuration.scalesToFit = true
                 configuration.showsCursor = false
                 configuration.ignoreShadowsSingleWindow = false
@@ -44,11 +45,14 @@ final class ThumbnailProvider {
     }
 
     private func bestMatch(for descriptor: WindowDescriptor, in windows: [SCWindow]) -> SCWindow? {
-        windows.filter {
+        if let cgWindowID = descriptor.cgWindowID {
+            return windows.first { $0.windowID == cgWindowID }
+        }
+        return windows.filter {
             $0.owningApplication?.processID == descriptor.processID
         }.min {
             score($0, descriptor: descriptor) < score($1, descriptor: descriptor)
-        }
+        }.flatMap { score($0, descriptor: descriptor) <= 80 ? $0 : nil }
     }
 
     private func score(_ window: SCWindow, descriptor: WindowDescriptor) -> CGFloat {
@@ -77,4 +81,3 @@ final class ThumbnailProvider {
             + abs(lhs.height - rhs.height)
     }
 }
-

@@ -2,16 +2,19 @@ import AppKit
 import SnapAssistCore
 import SwiftUI
 
+@MainActor
 final class PickerZoneModel: ObservableObject {
     let zoneID: Int
+    let targetLabel: String
     let candidates: [WindowDescriptor]
-    let thumbnails: [String: NSImage]
+    @Published var thumbnails: [String: NSImage]
     let icons: [String: NSImage]
     @Published var active: Bool
     @Published var selectedCandidateID: String?
 
     init(
         zoneID: Int,
+        targetLabel: String,
         candidates: [WindowDescriptor],
         thumbnails: [String: NSImage],
         icons: [String: NSImage],
@@ -19,6 +22,7 @@ final class PickerZoneModel: ObservableObject {
         selectedCandidateID: String?
     ) {
         self.zoneID = zoneID
+        self.targetLabel = targetLabel
         self.candidates = candidates
         self.thumbnails = thumbnails
         self.icons = icons
@@ -37,7 +41,7 @@ struct PickerZoneView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 7) {
                 Image(systemName: "rectangle.on.rectangle.angled")
-                Text("Fenster auswählen")
+                Text(model.targetLabel)
                     .font(.headline)
                 Spacer()
                 Text("Esc")
@@ -79,6 +83,9 @@ struct PickerZoneView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("\(candidate.appName), \(candidate.title)")
+                        .accessibilityAddTraits(
+                            model.active && model.selectedCandidateID == candidate.id ? .isSelected : []
+                        )
                     }
                 }
             }
@@ -128,6 +135,7 @@ final class PickerPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+@MainActor
 final class PickerController {
     var onSelect: ((String, Int) -> Void)?
     var onCancel: (() -> Void)?
@@ -156,6 +164,7 @@ final class PickerController {
         for zoneID in session.emptyZoneIDs {
             let model = PickerZoneModel(
                 zoneID: zoneID,
+                targetLabel: zoneLabel(for: zoneID, layout: session.group.layout),
                 candidates: session.candidates,
                 thumbnails: thumbnails,
                 icons: icons,
@@ -172,7 +181,7 @@ final class PickerController {
             panel.isOpaque = false
             panel.backgroundColor = .clear
             panel.hasShadow = false
-            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+            panel.collectionBehavior = [.fullScreenAuxiliary, .ignoresCycle]
             panel.hidesOnDeactivate = false
             panel.contentView = NSHostingView(rootView: PickerZoneView(model: model) { [weak self] windowID, selectedZoneID in
                 self?.onSelect?(windowID, selectedZoneID)
@@ -189,6 +198,13 @@ final class PickerController {
         }
     }
 
+    func updateThumbnails(_ thumbnails: [String: NSImage]) {
+        guard !thumbnails.isEmpty else { return }
+        for model in models.values {
+            model.thumbnails.merge(thumbnails) { _, new in new }
+        }
+    }
+
     func dismiss(notify: Bool = true) {
         removeEventMonitors()
         panels.values.forEach { $0.orderOut(nil) }
@@ -202,11 +218,12 @@ final class PickerController {
         localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             self?.handleKey(event) == true ? nil : event
         }
-        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+        let outsideMouseEvents: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: outsideMouseEvents) { [weak self] event in
             self?.cancelIfOutsidePanels(point: NSEvent.mouseLocation)
             return event
         }
-        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] _ in
+        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: outsideMouseEvents) { [weak self] _ in
             self?.cancelIfOutsidePanels(point: NSEvent.mouseLocation)
         }
     }
@@ -256,5 +273,16 @@ final class PickerController {
         guard panels.values.allSatisfy({ !$0.frame.contains(point) }) else { return }
         dismiss()
     }
-}
 
+
+    private func zoneLabel(for zoneID: Int, layout: LayoutGeometry) -> String {
+        switch layout.kind {
+        case .halves:
+            return zoneID == 0 ? "Linke Hälfte" : "Rechte Hälfte"
+        case .thirds:
+            return ["Linkes Drittel", "Mittleres Drittel", "Rechtes Drittel"][zoneID]
+        case .quarters:
+            return ["Oben links", "Oben rechts", "Unten links", "Unten rechts"][zoneID]
+        }
+    }
+}

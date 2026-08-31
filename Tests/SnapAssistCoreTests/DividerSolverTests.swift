@@ -13,7 +13,7 @@ final class DividerSolverTests: XCTestCase {
             members: members
         ))
 
-        let result = DividerSolver.resize(divider: divider, to: 700, members: members)
+        let result = try XCTUnwrap(DividerSolver.resize(divider: divider, to: 700, members: members))
 
         XCTAssertEqual(result["left"], CGRect(x: 0, y: 0, width: 700, height: 800))
         XCTAssertEqual(result["right"], CGRect(x: 700, y: 0, width: 500, height: 800))
@@ -31,7 +31,7 @@ final class DividerSolverTests: XCTestCase {
             members: members
         ))
 
-        let result = DividerSolver.resize(divider: divider, to: 525, members: members)
+        let result = try XCTUnwrap(DividerSolver.resize(divider: divider, to: 525, members: members))
 
         XCTAssertEqual(result["topLeft"]?.width, 525)
         XCTAssertEqual(result["bottomLeft"]?.width, 525)
@@ -49,7 +49,7 @@ final class DividerSolverTests: XCTestCase {
             members: members
         ))
 
-        let result = DividerSolver.resize(divider: divider, to: 700, members: members)
+        let result = try XCTUnwrap(DividerSolver.resize(divider: divider, to: 700, members: members))
 
         XCTAssertEqual(result["left"]?.maxX, 695)
         XCTAssertEqual(result["right"]?.minX, 705)
@@ -73,7 +73,7 @@ final class DividerSolverTests: XCTestCase {
             members: members
         ))
 
-        let result = DividerSolver.resize(divider: divider, to: 1_000, members: members)
+        let result = try XCTUnwrap(DividerSolver.resize(divider: divider, to: 1_000, members: members))
 
         XCTAssertEqual(result["left"]?.width, 800)
         XCTAssertEqual(result["right"]?.width, 400)
@@ -91,7 +91,7 @@ final class DividerSolverTests: XCTestCase {
             members: members
         ))
 
-        let result = DividerSolver.resize(divider: divider, to: 475, members: members)
+        let result = try XCTUnwrap(DividerSolver.resize(divider: divider, to: 475, members: members))
 
         XCTAssertEqual(result["bottomLeft"]?.height, 475)
         XCTAssertEqual(result["bottomRight"]?.height, 475)
@@ -107,5 +107,25 @@ final class DividerSolverTests: XCTestCase {
 
         XCTAssertNil(DividerSolver.findDivider(at: CGPoint(x: 450, y: 300), members: members))
     }
-}
 
+    func testRejectsInfeasibleMinimumSizesWithoutOverlap() throws {
+        let members = [
+            LayoutMember(
+                id: "left",
+                frame: CGRect(x: 0, y: 0, width: 500, height: 800),
+                minimumSize: CGSize(width: 700, height: 120)
+            ),
+            LayoutMember(
+                id: "right",
+                frame: CGRect(x: 500, y: 0, width: 500, height: 800),
+                minimumSize: CGSize(width: 700, height: 120)
+            ),
+        ]
+        let divider = try XCTUnwrap(DividerSolver.findDivider(
+            at: CGPoint(x: 500, y: 300),
+            members: members
+        ))
+
+        XCTAssertNil(DividerSolver.resize(divider: divider, to: 500, members: members))
+    }
+}
