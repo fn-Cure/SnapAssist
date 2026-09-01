@@ -2,6 +2,13 @@
 
 All notable user-facing changes to SnapAssist are documented here.
 
+## 0.3.5 — 2026-09-01
+
+### Fixed
+
+- Strengthened rollback for Chromium and other applications that process cross-display position and size changes in separate phases.
+- Rollback now tries both AX write orders, verifies the restored frame after each attempt, and reports the actual final frame when an application still refuses part of the restoration.
+
 ## 0.3.4 — 2026-09-01
 
 ### Added

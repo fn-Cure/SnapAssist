@@ -338,7 +338,7 @@ final class WindowSystem {
         )
 
         if Task.isCancelled {
-            let rolledBack = await restoreFrame(frameBefore, element: record.element)
+            let restoreResult = await restoreFrame(frameBefore, element: record.element)
             return mutationResult(
                 requestedFrame: cocoaFrame,
                 frameBefore: frameBefore,
@@ -346,7 +346,7 @@ final class WindowSystem {
                 sizeErrors: sizeErrors,
                 positionError: positionError,
                 attemptCount: attemptCount,
-                rolledBack: rolledBack,
+                restoreResult: restoreResult,
                 processID: record.processID,
                 cgWindowID: record.cgWindowID
             )
@@ -360,7 +360,6 @@ final class WindowSystem {
                 sizeErrors: sizeErrors,
                 positionError: positionError,
                 attemptCount: attemptCount,
-                rolledBack: false,
                 processID: record.processID,
                 cgWindowID: record.cgWindowID
             )
@@ -390,18 +389,12 @@ final class WindowSystem {
                 sizeErrors: sizeErrors,
                 positionError: positionError,
                 attemptCount: attemptCount,
-                rolledBack: false,
                 processID: record.processID,
                 cgWindowID: record.cgWindowID
             )
         }
 
-        var rolledBack = false
-        if let frameBefore,
-           let currentFrame = frame(of: record.element),
-           !currentFrame.isApproximatelyEqual(to: frameBefore, tolerance: 4) {
-            rolledBack = await restoreFrame(frameBefore, element: record.element)
-        }
+        let restoreResult = await restoreFrame(frameBefore, element: record.element)
 
         return mutationResult(
             requestedFrame: cocoaFrame,
@@ -410,7 +403,7 @@ final class WindowSystem {
             sizeErrors: sizeErrors,
             positionError: positionError,
             attemptCount: attemptCount,
-            rolledBack: rolledBack,
+            restoreResult: restoreResult,
             processID: record.processID,
             cgWindowID: record.cgWindowID
         )
@@ -492,8 +485,15 @@ final class WindowSystem {
         return .unavailable
     }
 
-    private func restoreFrame(_ cocoaFrame: CGRect?, element: AXUIElement) async -> Bool {
-        guard let cocoaFrame else { return false }
+    private struct FrameRestoreResult {
+        let verified: Bool
+        let frameAfter: CGRect?
+    }
+
+    private func restoreFrame(_ cocoaFrame: CGRect?, element: AXUIElement) async -> FrameRestoreResult {
+        guard let cocoaFrame else {
+            return FrameRestoreResult(verified: false, frameAfter: frame(of: element))
+        }
         let axFrame = ScreenCoordinateConverter.cocoaToAX(
             cocoaFrame,
             primaryScreenHeight: primaryScreenHeight
@@ -501,22 +501,35 @@ final class WindowSystem {
         var point = axFrame.origin
         var size = axFrame.size
         guard let pointValue = AXValueCreate(.cgPoint, &point),
-              let sizeValue = AXValueCreate(.cgSize, &size) else { return false }
-        _ = writeFrame(
-            element: element,
-            pointValue: pointValue,
-            sizeValue: sizeValue,
-            order: .positionSizePosition
-        )
-        let readback = await waitForFrame(
-            cocoaFrame,
-            element: element,
-            maximumSamples: 6,
-            intervalNanoseconds: 30_000_000,
-            ignoreCancellation: true
-        )
-        if case .verified = readback { return true }
-        return false
+              let sizeValue = AXValueCreate(.cgSize, &size) else {
+            return FrameRestoreResult(verified: false, frameAfter: frame(of: element))
+        }
+
+        var latestFrame = frame(of: element)
+        for order in [FrameWriteOrder.positionSizePosition, .sizePositionSize] {
+            _ = writeFrame(
+                element: element,
+                pointValue: pointValue,
+                sizeValue: sizeValue,
+                order: order
+            )
+            let readback = await waitForFrame(
+                cocoaFrame,
+                element: element,
+                maximumSamples: 10,
+                intervalNanoseconds: 40_000_000,
+                ignoreCancellation: true
+            )
+            switch readback {
+            case let .verified(frame):
+                return FrameRestoreResult(verified: true, frameAfter: frame)
+            case let .mismatched(frame):
+                latestFrame = frame
+            case .pending, .unavailable:
+                latestFrame = frame(of: element)
+            }
+        }
+        return FrameRestoreResult(verified: false, frameAfter: latestFrame)
     }
 
     private func mutationResult(
@@ -526,7 +539,7 @@ final class WindowSystem {
         sizeErrors: [AXError],
         positionError: AXError?,
         attemptCount: Int,
-        rolledBack: Bool,
+        restoreResult: FrameRestoreResult? = nil,
         processID: pid_t,
         cgWindowID: CGWindowID
     ) -> WindowMutationResult {
@@ -550,14 +563,20 @@ final class WindowSystem {
             verification = .failed
             lastMutationFailureDescription = "Fenster-Frame blieb instabil"
         }
-        let frameAfter = rolledBack ? frameBefore : observedFrameAfter
+        let didRestore = restoreResult?.verified ?? false
+        let frameAfter: CGRect?
+        if let restoreResult {
+            frameAfter = restoreResult.frameAfter
+        } else {
+            frameAfter = observedFrameAfter
+        }
 
         logger.notice(
-            "AX mutation pid=\(processID) cgWindowID=\(cgWindowID) verification=\(verification.rawValue, privacy: .public) attempts=\(attemptCount) rolledBack=\(rolledBack) before=\(String(describing: frameBefore), privacy: .public) requested=\(String(describing: requestedFrame), privacy: .public) after=\(String(describing: frameAfter), privacy: .public) sizeErrors=\(sizeErrors.map(\.rawValue), privacy: .public) positionError=\(String(describing: positionError?.rawValue), privacy: .public)"
+            "AX mutation pid=\(processID) cgWindowID=\(cgWindowID) verification=\(verification.rawValue, privacy: .public) attempts=\(attemptCount) rolledBack=\(didRestore) before=\(String(describing: frameBefore), privacy: .public) requested=\(String(describing: requestedFrame), privacy: .public) after=\(String(describing: frameAfter), privacy: .public) sizeErrors=\(sizeErrors.map(\.rawValue), privacy: .public) positionError=\(String(describing: positionError?.rawValue), privacy: .public)"
         )
         diagnostics.record(
             category: "mutation",
-            "pid=\(processID), window=\(cgWindowID), verification=\(verification.rawValue), attempts=\(attemptCount), rolledBack=\(rolledBack)"
+            "pid=\(processID), window=\(cgWindowID), verification=\(verification.rawValue), attempts=\(attemptCount), rolledBack=\(didRestore)"
         )
 
         return WindowMutationResult(
@@ -568,7 +587,7 @@ final class WindowSystem {
             positionError: positionError,
             verification: verification,
             attemptCount: attemptCount,
-            rolledBack: rolledBack
+            rolledBack: didRestore
         )
     }
 
