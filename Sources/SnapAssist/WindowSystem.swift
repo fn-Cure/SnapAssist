@@ -83,23 +83,26 @@ final class WindowSystem {
     private(set) var lastMutationFailureDescription: String?
 
     var isAccessibilityTrusted: Bool {
-        AXIsProcessTrusted()
+        lastAccessibilityTrust
     }
 
     var hasScreenRecordingPermission: Bool {
-        CGPreflightScreenCaptureAccess()
+        lastScreenRecordingPermission
     }
 
     var degradedObserverCount: Int { degradedObserverPIDs.count }
 
     func requestAccessibilityPermission(prompt: Bool) -> Bool {
         let options = ["AXTrustedCheckOptionPrompt": prompt] as CFDictionary
-        return AXIsProcessTrustedWithOptions(options)
+        let trusted = AXIsProcessTrustedWithOptions(options)
+        refreshAccessibilityState()
+        return trusted
     }
 
     func requestScreenRecordingPermission() {
-        if !CGPreflightScreenCaptureAccess() {
+        if !lastScreenRecordingPermission {
             _ = CGRequestScreenCaptureAccess()
+            refreshAccessibilityState()
         }
     }
 
@@ -174,8 +177,8 @@ final class WindowSystem {
     }
 
     func refreshAccessibilityState() {
-        let trusted = isAccessibilityTrusted
-        let screenRecordingGranted = hasScreenRecordingPermission
+        let trusted = AXIsProcessTrusted()
+        let screenRecordingGranted = CGPreflightScreenCaptureAccess()
         let trustChanged = trusted != lastAccessibilityTrust
         let screenRecordingChanged = screenRecordingGranted != lastScreenRecordingPermission
         guard trustChanged || screenRecordingChanged else {

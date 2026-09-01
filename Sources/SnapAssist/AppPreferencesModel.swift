@@ -49,7 +49,7 @@ final class AppPreferencesModel: ObservableObject {
         self.observerFailureCount = coordinator.windowSystem.observerFailureCount
         self.degradedObserverCount = coordinator.windowSystem.degradedObserverCount
         self.lastMutationFailure = coordinator.windowSystem.lastMutationFailureDescription
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
     }
@@ -59,7 +59,6 @@ final class AppPreferencesModel: ObservableObject {
     }
 
     func refresh() {
-        coordinator.windowSystem.refreshAccessibilityState()
         accessibilityTrusted = coordinator.windowSystem.isAccessibilityTrusted
         screenRecordingGranted = coordinator.windowSystem.hasScreenRecordingPermission
         observerFailureCount = coordinator.windowSystem.observerFailureCount

@@ -2,6 +2,13 @@
 
 All notable user-facing changes to SnapAssist are documented here.
 
+## 0.3.6 — 2026-09-01
+
+### Improved
+
+- Cached Accessibility and Screen Recording status between the single two-second permission checks instead of issuing duplicate TCC requests from both the runtime and Settings model.
+- Reduced background Service Management status refreshes from once per second to once every two seconds.
+
 ## 0.3.5 — 2026-09-01
 
 ### Fixed
