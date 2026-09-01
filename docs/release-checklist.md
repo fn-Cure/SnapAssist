@@ -25,7 +25,8 @@ Use this checklist for the exact DMG that will be published. A local development
 - [ ] Internal and external displays pass half, thirds, quarters, cross-display candidate placement, and disconnect recovery.
 - [ ] Screen Recording denial, later grant, revocation, and icon-only fallback pass in a clean user account.
 - [ ] Accessibility denial, later grant, revocation, relaunch, and TCC identity retention pass in a clean user account.
-- [ ] Thirty-minute idle CPU run and multi-hour mixed-application soak complete without stale panels, wrong-zone placement, or orphan state.
+- [x] Version 0.3.7 completes a continuous 1,804-second idle run with 359 samples, 0.27% average CPU including launch, no error/fault logs, and no orphan picker panels.
+- [ ] Multi-hour mixed-application soak completes without stale panels, wrong-zone placement, or orphan state.
 
 ## Public direct release
 
