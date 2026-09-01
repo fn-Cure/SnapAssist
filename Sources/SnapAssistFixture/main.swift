@@ -21,6 +21,7 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate {
         appMenu.addItem(item("Frontfenster links anordnen", action: #selector(snapFrontLeft), key: "l"))
         appMenu.addItem(item("Modales Fenster öffnen", action: #selector(openModal), key: "m"))
         appMenu.addItem(item("UI 750 ms blockieren", action: #selector(blockMainThread), key: "b"))
+        appMenu.addItem(item("Großes Mindestfenster", action: #selector(createLargeMinimumWindow), key: "g"))
         appMenu.addItem(.separator())
         appMenu.addItem(NSMenuItem(
             title: "Fixture beenden",
@@ -70,16 +71,28 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate {
         Thread.sleep(forTimeInterval: 0.75)
     }
 
-    private func createWindow(title: String) {
+    @objc private func createLargeMinimumWindow() {
+        createWindow(
+            title: "Fixture Large Minimum",
+            initialSize: NSSize(width: 1_800, height: 950),
+            minimumSize: NSSize(width: 1_700, height: 900)
+        )
+    }
+
+    private func createWindow(
+        title: String,
+        initialSize: NSSize = NSSize(width: 640, height: 440),
+        minimumSize: NSSize = NSSize(width: 420, height: 300)
+    ) {
         let offset = CGFloat(windows.count * 34)
         let window = NSWindow(
-            contentRect: NSRect(x: 180 + offset, y: 180 + offset, width: 640, height: 440),
+            contentRect: NSRect(origin: NSPoint(x: 180 + offset, y: 180 + offset), size: initialSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = title
-        window.minSize = NSSize(width: 420, height: 300)
+        window.minSize = minimumSize
         window.isReleasedWhenClosed = false
 
         let stack = NSStackView()
@@ -96,6 +109,11 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate {
         let snapButton = NSButton(title: "Links anordnen", target: self, action: #selector(snapFrontLeft))
         let modalButton = NSButton(title: "Modal öffnen", target: self, action: #selector(openModal))
         let blockButton = NSButton(title: "750 ms blockieren", target: self, action: #selector(blockMainThread))
+        let largeMinimumButton = NSButton(
+            title: "Großes Mindestfenster",
+            target: self,
+            action: #selector(createLargeMinimumWindow)
+        )
 
         stack.addArrangedSubview(heading)
         stack.addArrangedSubview(explanation)
@@ -103,6 +121,7 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate {
         stack.addArrangedSubview(snapButton)
         stack.addArrangedSubview(modalButton)
         stack.addArrangedSubview(blockButton)
+        stack.addArrangedSubview(largeMinimumButton)
         window.contentView = stack
         window.makeKeyAndOrderFront(nil)
         windows.append(window)
