@@ -2,6 +2,13 @@
 
 All notable user-facing changes to SnapAssist are documented here.
 
+## 0.3.7 — 2026-09-01
+
+### Fixed
+
+- Deferred creation of the menu-bar status item until AppKit finishes its initial FrontBoard scene layout, eliminating an intermittent first-launch layout-recursion warning on macOS 26.
+- Kept first-run onboarding responsive by scheduling it independently from the delayed status item.
+
 ## 0.3.6 — 2026-09-01
 
 ### Improved

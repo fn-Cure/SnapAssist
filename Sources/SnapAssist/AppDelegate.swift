@@ -11,11 +11,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMainMenu()
-        buildStatusMenu()
         coordinator.start()
         preferencesModel.refresh()
         if !preferencesModel.onboardingCompleted {
             DispatchQueue.main.async { [weak self] in self?.showOnboarding() }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            guard let self else { return }
+            self.buildStatusMenu()
         }
     }
 
