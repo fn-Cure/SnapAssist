@@ -21,7 +21,9 @@ Use this checklist for the exact DMG that will be published. A local development
 - [x] Enabled and experimental-resize choices persist; Paused suspends AX observation and geometry polling.
 - [ ] Reproduce the previously failing target application and confirm the selected window reaches the requested free zone instead of overlapping the trigger window.
 - [x] Controlled Finder and Safari windows are selected through real picker `AXPress` actions and reach the exact requested quarter in one verified attempt.
-- [ ] One Chromium/Electron app passes placement after the 0.3.5 rollback fix, plus Return, Escape, close, minimize, and refused/minimum-size cases.
+- [x] A uniquely titled Google Chrome window is selected through a real picker `AXPress` and reaches the exact requested quarter in one verified attempt on version 0.3.7.
+- [x] Return places the preselected controlled candidate; Escape, trigger close, and trigger minimize each remove all three picker panels without an unintended mutation.
+- [ ] Permission-refusal and revocation cases complete on a clean user account without altering the developer machine's established TCC grants.
 - [ ] Internal and external displays pass half, thirds, quarters, cross-display candidate placement, and disconnect recovery.
 - [ ] Screen Recording denial, later grant, revocation, and icon-only fallback pass in a clean user account.
 - [ ] Accessibility denial, later grant, revocation, relaunch, and TCC identity retention pass in a clean user account.
