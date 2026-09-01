@@ -216,6 +216,10 @@ final class PickerController {
                 backing: .buffered,
                 defer: false
             )
+            let accessibilityTitle = "SnapAssist – \(model.targetLabel)"
+            panel.title = accessibilityTitle
+            panel.setAccessibilityRole(.window)
+            panel.setAccessibilityLabel(accessibilityTitle)
             panel.level = .popUpMenu
             panel.isOpaque = false
             panel.backgroundColor = .clear
