@@ -116,9 +116,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let onboarding = NSMenuItem(title: "Einführung anzeigen…", action: #selector(showOnboarding), keyEquivalent: "")
         onboarding.target = self
         menu.addItem(onboarding)
-        let updates = NSMenuItem(title: "Nach Updates suchen…", action: #selector(checkForUpdates), keyEquivalent: "")
-        updates.target = self
-        menu.addItem(updates)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "SnapAssist beenden", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quit)
@@ -162,10 +159,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         preferencesModel.refresh()
         onboardingWindowController?.show()
-    }
-
-    @objc private func checkForUpdates() {
-        preferencesModel.checkForUpdates()
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
