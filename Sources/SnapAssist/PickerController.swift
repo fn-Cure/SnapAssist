@@ -108,16 +108,21 @@ struct PickerZoneView: View {
                             }
                             .id(candidate.id)
                             .buttonStyle(.plain)
-                            .accessibilityLabel(
-                                candidate.title.isEmpty
-                                    ? candidate.appName
-                                    : "\(candidate.appName), \(candidate.title)"
-                            )
-                            .accessibilityHint("In \(model.targetLabel) platzieren")
-                            .accessibilityAddTraits(
-                                model.active && model.selectedCandidateID == candidate.id ? .isSelected : []
-                            )
                             .disabled(model.isBusy)
+                            .accessibilityRepresentation {
+                                Button {
+                                    onSelect(candidate.id, model.zoneID)
+                                } label: {
+                                    Text(candidateAccessibilityLabel(candidate))
+                                }
+                                .accessibilityLabel(Text(candidateAccessibilityLabel(candidate)))
+                                .accessibilityValue(Text(candidateAccessibilityLabel(candidate)))
+                                .accessibilityHint("In \(model.targetLabel) platzieren")
+                                .accessibilityAddTraits(
+                                    model.active && model.selectedCandidateID == candidate.id ? .isSelected : []
+                                )
+                                .disabled(model.isBusy)
+                            }
                         }
                     }
                 }
@@ -164,6 +169,12 @@ struct PickerZoneView: View {
         model.active && model.selectedCandidateID == candidate.id
             ? AnyShapeStyle(Color.accentColor.opacity(0.22))
             : AnyShapeStyle(Color.primary.opacity(0.07))
+    }
+
+    private func candidateAccessibilityLabel(_ candidate: WindowDescriptor) -> String {
+        candidate.title.isEmpty || candidate.title == candidate.appName
+            ? candidate.appName
+            : "\(candidate.appName), \(candidate.title)"
     }
 }
 
