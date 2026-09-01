@@ -262,6 +262,17 @@ final class AppCoordinator {
             return
         }
 
+        guard runtimeState.activeSession == originalSession else {
+            mutationLedger.cancel(windowID: windowID)
+            if let frameBefore = result.frameBefore {
+                activeMutationWindowIDs.insert(windowID)
+                _ = await windowSystem.setFrame(frameBefore, for: windowID)
+                activeMutationWindowIDs.remove(windowID)
+            }
+            invalidateAll(reason: "picker session changed during placement")
+            return
+        }
+
         stagedSession.group.verifiedFrames[windowID] = verifiedFrame
         diagnostics.record(category: "mutation", "placement verified in \(result.attemptCount) attempt(s)")
         let generation = runtimeState.install(stagedSession)

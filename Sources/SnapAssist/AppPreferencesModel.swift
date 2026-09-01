@@ -90,6 +90,11 @@ final class AppPreferencesModel: ObservableObject {
         coordinator.windowSystem.openAccessibilitySettings()
     }
 
+    func requestAccessibilityPermission() {
+        _ = coordinator.windowSystem.requestAccessibilityPermission(prompt: true)
+        refresh()
+    }
+
     func requestScreenRecording() {
         coordinator.windowSystem.requestScreenRecordingPermission()
         refresh()

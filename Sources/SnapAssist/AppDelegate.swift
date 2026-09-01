@@ -3,7 +3,6 @@ import SnapAssistCore
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    private let accessibilityPromptKey = "hasRequestedAccessibilityPermission"
     private let coordinator = AppCoordinator()
     private lazy var preferencesModel = AppPreferencesModel(coordinator: coordinator)
     private var statusItem: NSStatusItem?
@@ -13,14 +12,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMainMenu()
         buildStatusMenu()
-        let defaults = UserDefaults.standard
-        if AccessibilityPromptPolicy.shouldPrompt(
-            isTrusted: coordinator.windowSystem.isAccessibilityTrusted,
-            hasRequestedBefore: defaults.bool(forKey: accessibilityPromptKey)
-        ) {
-            defaults.set(true, forKey: accessibilityPromptKey)
-            _ = coordinator.windowSystem.requestAccessibilityPermission(prompt: true)
-        }
         coordinator.start()
         preferencesModel.refresh()
         if !preferencesModel.onboardingCompleted {

@@ -59,44 +59,56 @@ struct PickerZoneView: View {
                     .accessibilityLabel("Fehler: \(errorMessage)")
             }
 
-            ScrollView {
-                LazyVGrid(columns: columns, spacing: 10) {
-                    ForEach(model.candidates) { candidate in
-                        Button {
-                            onSelect(candidate.id, model.zoneID)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 6) {
-                                preview(for: candidate)
-                                    .frame(maxWidth: .infinity)
-                                    .aspectRatio(16 / 10, contentMode: .fit)
-                                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVGrid(columns: columns, spacing: 10) {
+                        ForEach(model.candidates) { candidate in
+                            Button {
+                                onSelect(candidate.id, model.zoneID)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    preview(for: candidate)
+                                        .frame(maxWidth: .infinity)
+                                        .aspectRatio(16 / 10, contentMode: .fit)
+                                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
-                                HStack(spacing: 6) {
-                                    if let icon = model.icons[candidate.id] {
-                                        Image(nsImage: icon)
-                                            .resizable()
-                                            .frame(width: 18, height: 18)
-                                    }
-                                    VStack(alignment: .leading, spacing: 1) {
-                                        Text(candidate.title.isEmpty ? candidate.appName : candidate.title)
-                                            .lineLimit(1)
-                                            .font(.caption.weight(.medium))
-                                        Text(candidate.appName)
-                                            .lineLimit(1)
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
+                                    HStack(spacing: 6) {
+                                        if let icon = model.icons[candidate.id] {
+                                            Image(nsImage: icon)
+                                                .resizable()
+                                                .frame(width: 18, height: 18)
+                                        }
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text(candidate.title.isEmpty ? candidate.appName : candidate.title)
+                                                .lineLimit(1)
+                                                .font(.caption.weight(.medium))
+                                            Text(candidate.appName)
+                                                .lineLimit(1)
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                        }
                                     }
                                 }
+                                .padding(7)
+                                .background(cardBackground(for: candidate))
                             }
-                            .padding(7)
-                            .background(cardBackground(for: candidate))
+                            .id(candidate.id)
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(
+                                candidate.title.isEmpty
+                                    ? candidate.appName
+                                    : "\(candidate.appName), \(candidate.title)"
+                            )
+                            .accessibilityHint("In \(model.targetLabel) platzieren")
+                            .accessibilityAddTraits(
+                                model.active && model.selectedCandidateID == candidate.id ? .isSelected : []
+                            )
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("\(candidate.appName), \(candidate.title)")
-                        .accessibilityAddTraits(
-                            model.active && model.selectedCandidateID == candidate.id ? .isSelected : []
-                        )
                     }
+                }
+                .onChange(of: model.selectedCandidateID) { _, candidateID in
+                    guard model.active, let candidateID else { return }
+                    proxy.scrollTo(candidateID, anchor: .center)
                 }
             }
         }

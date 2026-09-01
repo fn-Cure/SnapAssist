@@ -129,8 +129,8 @@ private struct PermissionSettingsView: View {
                     title: "Bedienungshilfen",
                     explanation: "Erlaubt SnapAssist, Fenster zu erkennen, zu verschieben und zu fokussieren.",
                     granted: model.accessibilityTrusted,
-                    buttonTitle: "Systemeinstellungen öffnen",
-                    action: model.openAccessibilitySettings
+                    buttonTitle: "Berechtigung anfordern",
+                    action: model.requestAccessibilityPermission
                 )
             }
 
@@ -350,8 +350,8 @@ private struct OnboardingView: View {
                 title: "Bedienungshilfen",
                 explanation: "Erforderlich zum Erkennen und Positionieren von Fenstern.",
                 granted: model.accessibilityTrusted,
-                buttonTitle: "Systemeinstellungen öffnen",
-                action: model.openAccessibilitySettings
+                buttonTitle: "Berechtigung anfordern",
+                action: model.requestAccessibilityPermission
             )
             PermissionRow(
                 title: "Bildschirmaufnahme",
