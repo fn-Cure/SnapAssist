@@ -20,7 +20,8 @@ Use this checklist for the exact DMG that will be published. A local development
 - [x] A deliberately oversized fixture window is clamped by AppKit and returns to its exact verified original frame through the dual-order rollback.
 - [x] Enabled and experimental-resize choices persist; Paused suspends AX observation and geometry polling.
 - [ ] Reproduce the previously failing target application and confirm the selected window reaches the requested free zone instead of overlapping the trigger window.
-- [ ] Finder, Safari, and one Chromium/Electron app pass click, Return, Escape, close, minimize, and refused/minimum-size cases.
+- [x] Controlled Finder and Safari windows are selected through real picker `AXPress` actions and reach the exact requested quarter in one verified attempt.
+- [ ] One Chromium/Electron app passes placement after the 0.3.5 rollback fix, plus Return, Escape, close, minimize, and refused/minimum-size cases.
 - [ ] Internal and external displays pass half, thirds, quarters, cross-display candidate placement, and disconnect recovery.
 - [ ] Screen Recording denial, later grant, revocation, and icon-only fallback pass in a clean user account.
 - [ ] Accessibility denial, later grant, revocation, relaunch, and TCC identity retention pass in a clean user account.
