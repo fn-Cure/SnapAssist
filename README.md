@@ -63,6 +63,8 @@ Der Standard-Build ist Universal (`arm64` und `x86_64`) und aktiviert Hardened R
 
 Die vollständige App benötigt systemweite Accessibility-APIs und kann deshalb nicht in der für neue Mac-App-Store-Apps verpflichtenden App Sandbox ausgeführt werden. Der unterstützte Veröffentlichungskanal ist eine direkt verteilte, notarisierte Developer-ID-Version. Details und Apple-Quellen stehen im [Distributionsaudit](docs/research/2026-08-31-app-store-distribution.md).
 
+Änderungen pro Version stehen im [Changelog](CHANGELOG.md). Vor jedem öffentlichen Build muss die [Release-Checkliste](docs/release-checklist.md) für das tatsächlich ausgelieferte DMG abgeschlossen werden.
+
 Für einen öffentlichen Release werden ein `Developer ID Application`-Zertifikat und ein gespeichertes Notary-Profil benötigt:
 
 ```bash
