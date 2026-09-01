@@ -13,7 +13,7 @@ final class AppCoordinator {
     private var pendingDetections: [String: DispatchWorkItem] = [:]
     private var thumbnailTask: Task<Void, Never>?
     private var placementTask: Task<Void, Never>?
-    private var placementOperationID: UUID?
+    private var placementGate = PlacementOperationGate()
     private var activeMutationWindowIDs: Set<String> = []
     private var thumbnailCache: [String: NSImage] = [:]
     private let logger = Logger(subsystem: "com.caner.snapassist", category: "Coordinator")
@@ -207,23 +207,24 @@ final class AppCoordinator {
     }
 
     private func place(windowID: String, into zoneID: Int) {
-        guard placementTask == nil else { return }
-        guard let originalSession = runtimeState.activeSession else { return }
+        guard let placementOperationID = placementGate.begin() else { return }
+        guard let originalSession = runtimeState.activeSession else {
+            placementGate.cancel()
+            return
+        }
         var stagedSession = originalSession
         guard
               let targetFrame = stagedSession.place(windowID: windowID, into: zoneID) else {
+            placementGate.cancel()
             return
         }
 
         pickerController.setBusy(true)
-        let placementOperationID = UUID()
-        self.placementOperationID = placementOperationID
         placementTask = Task { [weak self] in
             guard let self else { return }
             defer {
-                if self.placementOperationID == placementOperationID {
+                if self.placementGate.finish(placementOperationID) {
                     self.placementTask = nil
-                    self.placementOperationID = nil
                 }
             }
             await self.performPlacement(
@@ -337,7 +338,7 @@ final class AppCoordinator {
         thumbnailTask = nil
         placementTask?.cancel()
         placementTask = nil
-        placementOperationID = nil
+        placementGate.cancel()
         activeMutationWindowIDs.removeAll()
         thumbnailCache.removeAll()
         mutationLedger.cancelAll()
