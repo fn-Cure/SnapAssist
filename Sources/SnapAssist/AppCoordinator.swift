@@ -211,7 +211,7 @@ final class AppCoordinator {
             return
         }
 
-        pickerController.dismiss(notify: false)
+        pickerController.setBusy(true)
         placementTask?.cancel()
         placementTask = Task { [weak self] in
             guard let self else { return }
@@ -250,7 +250,7 @@ final class AppCoordinator {
             )
             mutationLedger.cancel(windowID: windowID)
             if runtimeState.activeSession == originalSession {
-                pickerController.present(session: originalSession, thumbnails: thumbnailCache)
+                pickerController.setBusy(false)
                 pickerController.showError(
                     result.rolledBack
                         ? "Fenster konnte nicht platziert werden und wurde zurückgesetzt."

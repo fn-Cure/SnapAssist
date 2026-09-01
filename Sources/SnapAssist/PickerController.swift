@@ -13,6 +13,7 @@ final class PickerZoneModel: ObservableObject {
     @Published var active: Bool
     @Published var selectedCandidateID: String?
     @Published var errorMessage: String?
+    @Published var isBusy: Bool
 
     init(
         zoneID: Int,
@@ -31,6 +32,7 @@ final class PickerZoneModel: ObservableObject {
         self.active = active
         self.selectedCandidateID = selectedCandidateID
         self.errorMessage = nil
+        self.isBusy = false
     }
 }
 
@@ -57,6 +59,12 @@ struct PickerZoneView: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
                     .accessibilityLabel("Fehler: \(errorMessage)")
+            }
+
+            if model.isBusy {
+                ProgressView("Fenster wird platziert…")
+                    .controlSize(.small)
+                    .accessibilityLabel("Fenster wird platziert")
             }
 
             ScrollViewReader { proxy in
@@ -103,6 +111,7 @@ struct PickerZoneView: View {
                             .accessibilityAddTraits(
                                 model.active && model.selectedCandidateID == candidate.id ? .isSelected : []
                             )
+                            .disabled(model.isBusy)
                         }
                     }
                 }
@@ -241,6 +250,13 @@ final class PickerController {
             model.errorMessage = message
         }
         NSSound.beep()
+    }
+
+    func setBusy(_ busy: Bool) {
+        for model in models.values {
+            model.isBusy = busy
+            if busy { model.errorMessage = nil }
+        }
     }
 
     func dismiss(notify: Bool = true, reason: String = "requested") {
