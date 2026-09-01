@@ -53,7 +53,16 @@ final class WindowSystem {
         }
     }
 
-    var isEnabled = true
+    var isEnabled = true {
+        didSet {
+            guard isEnabled != oldValue else { return }
+            if isEnabled {
+                resumeObservationIfStarted()
+            } else {
+                suspendObservation()
+            }
+        }
+    }
     var onEvent: ((WindowSystemEvent) -> Void)?
 
     private var records: [String: WindowRecord] = [:]
@@ -119,9 +128,10 @@ final class WindowSystem {
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor in
-                    self?.refreshObservers()
-                    self?.onEvent?(.inventoryChanged)
-                    self?.pollKnownWindowGeometry()
+                    guard let self, self.isEnabled else { return }
+                    self.refreshObservers()
+                    self.onEvent?(.inventoryChanged)
+                    self.pollKnownWindowGeometry()
                 }
             })
         }
@@ -146,10 +156,7 @@ final class WindowSystem {
         ) { [weak self] _ in
             Task { @MainActor in self?.onEvent?(.environmentChanged) }
         })
-        refreshObservers()
-        _ = visibleWindows()
-        seedKnownWindowGeometry()
-        updateFocusedPollTimer()
+        resumeObservationIfStarted()
         permissionTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshAccessibilityState() }
         }
@@ -163,18 +170,7 @@ final class WindowSystem {
         notificationObservers.removeAll()
         permissionTimer?.invalidate()
         permissionTimer = nil
-        geometryPollTimer?.cancel()
-        geometryPollTimer = nil
-        observerRetryWorkItems.values.forEach { $0.cancel() }
-        observerRetryWorkItems.removeAll()
-        observerRetryAttempts.removeAll()
-        degradedObserverPIDs.removeAll()
-        lastPolledCGFrames.removeAll()
-        for observer in observers.values {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
-        }
-        observers.removeAll()
-        records.removeAll()
+        suspendObservation()
     }
 
     func refreshAccessibilityState() {
@@ -190,16 +186,9 @@ final class WindowSystem {
         lastScreenRecordingPermission = screenRecordingGranted
         if trustChanged {
             if trusted {
-                refreshObservers()
-                _ = visibleWindows()
-                seedKnownWindowGeometry()
+                resumeObservationIfStarted()
             } else {
-                for observer in observers.values {
-                    CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
-                }
-                observers.removeAll()
-                records.removeAll()
-                lastPolledCGFrames.removeAll()
+                suspendObservation()
             }
         }
         onEvent?(.environmentChanged)
@@ -607,7 +596,7 @@ final class WindowSystem {
     }
 
     private func refreshObservers() {
-        guard isAccessibilityTrusted else {
+        guard isEnabled, isAccessibilityTrusted else {
             logger.error("Cannot install AX observers because Accessibility is not trusted")
             return
         }
@@ -739,13 +728,37 @@ final class WindowSystem {
     }
 
     private func updateFocusedPollTimer() {
-        guard geometryPollTimer == nil else { return }
+        guard isEnabled, geometryPollTimer == nil else { return }
         let timer = DispatchSource.makeTimerSource(queue: .main)
         timer.schedule(deadline: .now() + 0.5, repeating: 0.5, leeway: .milliseconds(100))
         timer.setEventHandler { [weak self] in self?.pollKnownWindowGeometry() }
         geometryPollTimer = timer
         timer.resume()
         logger.notice("Started CG geometry fallback polling")
+    }
+
+    private func resumeObservationIfStarted() {
+        guard isEnabled, isAccessibilityTrusted, !workspaceObservers.isEmpty else { return }
+        refreshObservers()
+        _ = visibleWindows()
+        seedKnownWindowGeometry()
+        updateFocusedPollTimer()
+    }
+
+    private func suspendObservation() {
+        geometryPollTimer?.cancel()
+        geometryPollTimer = nil
+        observerRetryWorkItems.values.forEach { $0.cancel() }
+        observerRetryWorkItems.removeAll()
+        observerRetryAttempts.removeAll()
+        degradedObserverPIDs.removeAll()
+        lastPolledCGFrames.removeAll()
+        for observer in observers.values {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+        }
+        observers.removeAll()
+        records.removeAll()
+        logger.notice("Suspended window observation")
     }
 
     private func seedKnownWindowGeometry() {
