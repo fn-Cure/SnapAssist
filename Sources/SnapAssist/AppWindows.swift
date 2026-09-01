@@ -53,6 +53,7 @@ final class AppWindowController: NSWindowController, NSWindowDelegate {
     }
 }
 
+@MainActor
 private struct SettingsRootView: View {
     @ObservedObject var model: AppPreferencesModel
 
@@ -72,6 +73,7 @@ private struct SettingsRootView: View {
     }
 }
 
+@MainActor
 private struct GeneralSettingsView: View {
     @ObservedObject var model: AppPreferencesModel
 
@@ -80,7 +82,10 @@ private struct GeneralSettingsView: View {
             Section("Snap Assist") {
                 Toggle(
                     "SnapAssist aktiv",
-                    isOn: Binding(get: { model.isEnabled }, set: model.setEnabled)
+                    isOn: Binding(
+                        get: { model.isEnabled },
+                        set: { enabled in model.setEnabled(enabled) }
+                    )
                 )
                 Text("Erkennt Fenster, die du mit macOS oder Raycast anordnest, und schlägt passende Fenster für die freie Fläche vor.")
                     .foregroundStyle(.secondary)
@@ -92,7 +97,7 @@ private struct GeneralSettingsView: View {
                     "Beim Anmelden öffnen",
                     isOn: Binding(
                         get: { model.launchAtLoginEnabled },
-                        set: model.setLaunchAtLoginEnabled
+                        set: { enabled in model.setLaunchAtLoginEnabled(enabled) }
                     )
                 )
             }
@@ -102,7 +107,7 @@ private struct GeneralSettingsView: View {
                     "Gekoppelte Größenänderung",
                     isOn: Binding(
                         get: { model.linkedResizingEnabled },
-                        set: model.setLinkedResizingEnabled
+                        set: { enabled in model.setLinkedResizingEnabled(enabled) }
                     )
                 )
                 Text("Passt vollständig belegte Fenstergruppen nach dem Loslassen einer gemeinsamen Trennlinie an. Standardmäßig deaktiviert.")
@@ -119,6 +124,7 @@ private struct GeneralSettingsView: View {
     }
 }
 
+@MainActor
 private struct PermissionSettingsView: View {
     @ObservedObject var model: AppPreferencesModel
 
@@ -170,6 +176,7 @@ private struct PermissionSettingsView: View {
     }
 }
 
+@MainActor
 private struct PermissionRow: View {
     let title: String
     let explanation: String
@@ -197,6 +204,7 @@ private struct PermissionRow: View {
     }
 }
 
+@MainActor
 private struct StatusLine: View {
     let title: String
     let value: String
@@ -211,6 +219,7 @@ private struct StatusLine: View {
     }
 }
 
+@MainActor
 private struct AboutSettingsView: View {
     @ObservedObject var model: AppPreferencesModel
 
@@ -238,6 +247,7 @@ private struct AboutSettingsView: View {
     }
 }
 
+@MainActor
 private struct PrivacySettingsView: View {
     var body: some View {
         ScrollView {
@@ -269,6 +279,7 @@ private struct PrivacySettingsView: View {
     }
 }
 
+@MainActor
 private struct OnboardingView: View {
     @ObservedObject var model: AppPreferencesModel
     let onFinished: () -> Void
@@ -392,6 +403,7 @@ private struct OnboardingView: View {
     }
 }
 
+@MainActor
 private struct FeatureLabel: View {
     let icon: String
     let text: String
@@ -404,6 +416,7 @@ private struct FeatureLabel: View {
     }
 }
 
+@MainActor
 private struct InstructionRow: View {
     let number: Int
     let text: String

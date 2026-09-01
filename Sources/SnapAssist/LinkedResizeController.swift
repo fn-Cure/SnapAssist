@@ -14,7 +14,7 @@ final class LinkedResizeController {
         let driverWindowID: String
     }
 
-    private let windowSystem: WindowSystem
+    private let windowSystem: any WindowControlling
     private let groupsProvider: GroupsProvider
     private let mutationRegistered: MutationRegistrationHandler
     private let shouldIgnore: () -> Bool
@@ -32,7 +32,7 @@ final class LinkedResizeController {
     var monitorInstalled: Bool { eventMonitor != nil }
 
     init(
-        windowSystem: WindowSystem,
+        windowSystem: any WindowControlling,
         groupsProvider: @escaping GroupsProvider,
         mutationRegistered: @escaping MutationRegistrationHandler,
         shouldIgnore: @escaping () -> Bool,

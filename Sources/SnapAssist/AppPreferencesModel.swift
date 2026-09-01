@@ -47,7 +47,7 @@ final class AppPreferencesModel: ObservableObject {
         }
     }
 
-    deinit {
+    isolated deinit {
         refreshTimer?.invalidate()
     }
 

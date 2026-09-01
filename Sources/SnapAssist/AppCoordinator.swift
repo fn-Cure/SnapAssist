@@ -4,9 +4,9 @@ import SnapAssistCore
 
 @MainActor
 final class AppCoordinator {
-    let windowSystem: WindowSystem
+    let windowSystem: any WindowControlling
 
-    private let thumbnailProvider: ThumbnailProvider
+    private let thumbnailProvider: any ThumbnailProviding
     private let pickerController: PickerController
     private var runtimeState = SnapRuntimeState()
     private var mutationLedger = WindowMutationLedger()
@@ -58,8 +58,8 @@ final class AppCoordinator {
     }
 
     init(
-        windowSystem: WindowSystem,
-        thumbnailProvider: ThumbnailProvider,
+        windowSystem: any WindowControlling,
+        thumbnailProvider: any ThumbnailProviding,
         pickerController: PickerController
     ) {
         self.windowSystem = windowSystem

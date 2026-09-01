@@ -39,6 +39,8 @@ SnapAssist verarbeitet keine Fensterinhalte außerhalb des Macs und enthält kei
 
 ## Entwicklung
 
+Das Package verwendet Swift 6.3 im Swift-6-Sprachmodus. AppKit-, Accessibility- und ScreenCaptureKit-Zugriffe sind am Main Actor isoliert; die reinen Layoutmodelle bleiben in `SnapAssistCore`.
+
 ```bash
 swift test
 swift build

@@ -84,7 +84,7 @@ final class WindowSystem {
     var degradedObserverCount: Int { degradedObserverPIDs.count }
 
     func requestAccessibilityPermission(prompt: Bool) -> Bool {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt] as CFDictionary
+        let options = ["AXTrustedCheckOptionPrompt": prompt] as CFDictionary
         return AXIsProcessTrustedWithOptions(options)
     }
 
@@ -648,8 +648,7 @@ final class WindowSystem {
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
     }
 
-    fileprivate func handle(notification: CFString, element: AXUIElement) {
-        let notificationName = notification as String
+    fileprivate func handle(notification notificationName: String, element: AXUIElement) {
         logger.debug("Received AX notification: \(notificationName, privacy: .public)")
         if notificationName == kAXWindowCreatedNotification as String {
             var processID: pid_t = 0
@@ -896,8 +895,10 @@ final class WindowSystem {
                   let boundsValue = dictionary[kCGWindowBounds] else {
                 return nil
             }
-            let boundsDictionary = boundsValue as! CFDictionary
-            guard let axBounds = CGRect(dictionaryRepresentation: boundsDictionary) else { return nil }
+            guard let boundsDictionary = boundsValue as? NSDictionary else { return nil }
+            guard let axBounds = CGRect(dictionaryRepresentation: boundsDictionary) else {
+                return nil
+            }
             return WindowMetadata(
                 windowID: CGWindowID(windowNumber.uint32Value),
                 processID: ownerPID.int32Value,
@@ -955,10 +956,20 @@ private func windowSystemObserverCallback(
     refcon: UnsafeMutableRawPointer?
 ) {
     guard let refcon else { return }
-    let system = Unmanaged<WindowSystem>.fromOpaque(refcon).takeUnretainedValue()
+    let payload = WindowSystemObserverPayload(
+        system: Unmanaged<WindowSystem>.fromOpaque(refcon).takeUnretainedValue(),
+        element: element,
+        notification: notification as String
+    )
     Task { @MainActor in
-        system.handle(notification: notification, element: element)
+        payload.system.handle(notification: payload.notification, element: payload.element)
     }
+}
+
+private struct WindowSystemObserverPayload: @unchecked Sendable {
+    let system: WindowSystem
+    let element: AXUIElement
+    let notification: String
 }
 
 private extension CGRect {
