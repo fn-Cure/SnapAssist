@@ -4,16 +4,20 @@ import SnapAssistCore
 
 @MainActor
 final class AppCoordinator {
-    let windowSystem: WindowSystem
+    let windowSystem: any WindowControlling
 
-    private let thumbnailProvider: ThumbnailProvider
+    private let thumbnailProvider: any ThumbnailProviding
     private let pickerController: PickerController
     private var runtimeState = SnapRuntimeState()
     private var mutationLedger = WindowMutationLedger()
     private var pendingDetections: [String: DispatchWorkItem] = [:]
     private var thumbnailTask: Task<Void, Never>?
+    private var placementTask: Task<Void, Never>?
+    private var placementGate = PlacementOperationGate()
+    private var activeMutationWindowIDs: Set<String> = []
     private var thumbnailCache: [String: NSImage] = [:]
     private let logger = Logger(subsystem: "com.caner.snapassist", category: "Coordinator")
+    private let diagnostics = DiagnosticsStore.shared
     private lazy var linkedResizeController = LinkedResizeController(
         windowSystem: windowSystem,
         groupsProvider: { [weak self] in self?.runtimeState.groups ?? [:] },
@@ -54,8 +58,8 @@ final class AppCoordinator {
     }
 
     init(
-        windowSystem: WindowSystem,
-        thumbnailProvider: ThumbnailProvider,
+        windowSystem: any WindowControlling,
+        thumbnailProvider: any ThumbnailProviding,
         pickerController: PickerController
     ) {
         self.windowSystem = windowSystem
@@ -68,6 +72,7 @@ final class AppCoordinator {
             guard let self else { return }
             self.thumbnailTask?.cancel()
             self.thumbnailTask = nil
+            self.thumbnailCache.removeAll()
             self.runtimeState.cancelSession(removeIncompleteGroup: true)
         }
     }
@@ -98,6 +103,7 @@ final class AppCoordinator {
         guard isEnabled else { return }
         switch event {
         case let .geometryChanged(windowID):
+            if activeMutationWindowIDs.contains(windowID) { return }
             if let actualFrame = windowSystem.frame(for: windowID),
                case .programmatic = mutationLedger.classify(
                 windowID: windowID,
@@ -138,9 +144,19 @@ final class AppCoordinator {
 
     private func detectSnap(windowID: String) {
         let windows = windowSystem.visibleWindows()
-        guard let trigger = windows.first(where: { $0.id == windowID }),
-              let screenFrame = windowSystem.screenFrame(for: trigger.screenID),
-              let session = LayoutStateBuilder.buildSession(
+        guard let trigger = windows.first(where: { $0.id == windowID }) else {
+            invalidate(windowID: windowID, dismissPicker: true)
+            logger.notice("Discarded geometry event: stable window \(windowID, privacy: .public) missing from AX/CG catalog of \(windows.count) window(s)")
+            diagnostics.record(category: "detection", "discarded: stable ID missing from correlated catalog")
+            return
+        }
+        guard let screenFrame = windowSystem.screenFrame(for: trigger.screenID) else {
+            invalidate(windowID: windowID, dismissPicker: true)
+            logger.notice("Discarded geometry event: display \(trigger.screenID, privacy: .public) unavailable for window \(windowID, privacy: .public)")
+            diagnostics.record(category: "detection", "discarded: display unavailable")
+            return
+        }
+        guard let session = LayoutStateBuilder.buildSession(
                 trigger: trigger,
                 windowsOnTargetScreen: windows.filter { $0.screenID == trigger.screenID },
                 allVisibleWindows: windows,
@@ -148,11 +164,16 @@ final class AppCoordinator {
                 ownProcessID: ProcessInfo.processInfo.processIdentifier
               ) else {
             invalidate(windowID: windowID, dismissPicker: true)
-            logger.debug("Geometry event did not produce a supported snap for \(windowID, privacy: .public)")
+            logger.notice("Discarded geometry event: frame=\(String(describing: trigger.frame), privacy: .public) does not match a supported layout on screen=\(String(describing: screenFrame), privacy: .public)")
+            diagnostics.record(category: "detection", "discarded: geometry does not match supported layout")
             return
         }
 
         logger.notice("Detected \(session.group.layout.kind.rawValue, privacy: .public) snap with \(session.emptyZoneIDs.count) empty zones and \(session.candidates.count) candidates")
+        diagnostics.record(
+            category: "detection",
+            "layout=\(session.group.layout.kind.rawValue), emptyZones=\(session.emptyZoneIDs.count), candidates=\(session.candidates.count)"
+        )
         let generation = runtimeState.install(session)
         thumbnailTask?.cancel()
         thumbnailCache = thumbnailCache.filter { id, _ in session.candidates.contains(where: { $0.id == id }) }
@@ -160,6 +181,7 @@ final class AppCoordinator {
         guard !session.emptyZoneIDs.isEmpty, !session.candidates.isEmpty else {
             pickerController.dismiss(notify: false)
             runtimeState.cancelSession(removeIncompleteGroup: true)
+            thumbnailCache.removeAll()
             return
         }
 
@@ -185,27 +207,85 @@ final class AppCoordinator {
     }
 
     private func place(windowID: String, into zoneID: Int) {
-        guard var stagedSession = runtimeState.activeSession,
-              let targetFrame = stagedSession.place(windowID: windowID, into: zoneID) else {
+        guard let placementOperationID = placementGate.begin() else { return }
+        guard let originalSession = runtimeState.activeSession else {
+            placementGate.cancel()
             return
         }
+        var stagedSession = originalSession
+        guard
+              let targetFrame = stagedSession.place(windowID: windowID, into: zoneID) else {
+            placementGate.cancel()
+            return
+        }
+
+        pickerController.setBusy(true)
+        placementTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.placementGate.finish(placementOperationID) {
+                    self.placementTask = nil
+                }
+            }
+            await self.performPlacement(
+                originalSession: originalSession,
+                stagedSession: stagedSession,
+                windowID: windowID,
+                targetFrame: targetFrame
+            )
+        }
+    }
+
+    private func performPlacement(
+        originalSession: AssistSession,
+        stagedSession initialStagedSession: AssistSession,
+        windowID: String,
+        targetFrame: CGRect
+    ) async {
+        var stagedSession = initialStagedSession
 
         let operationID = UUID()
         mutationLedger.register(
             operationID: operationID,
             windowID: windowID,
             expectedFrame: targetFrame,
-            expiresAt: ProcessInfo.processInfo.systemUptime + 1.0
+            expiresAt: ProcessInfo.processInfo.systemUptime + 2.0
         )
-        let result = windowSystem.setFrame(targetFrame, for: windowID)
+        activeMutationWindowIDs.insert(windowID)
+        let result = await windowSystem.setFrame(targetFrame, for: windowID)
+        activeMutationWindowIDs.remove(windowID)
         guard result.succeeded, let verifiedFrame = result.frameAfter else {
+            diagnostics.record(
+                category: "mutation",
+                "placement failed: verification=\(result.verification.rawValue), attempts=\(result.attemptCount), rolledBack=\(result.rolledBack)"
+            )
             mutationLedger.cancel(windowID: windowID)
-            invalidateAll(reason: "picker placement failed verification")
-            NSSound.beep()
+            if runtimeState.activeSession == originalSession {
+                pickerController.setBusy(false)
+                pickerController.showError(
+                    result.rolledBack
+                        ? "Fenster konnte nicht platziert werden und wurde zurückgesetzt."
+                        : "Diese App hat die Fensterposition nicht vollständig übernommen."
+                )
+            } else {
+                invalidateAll(reason: "picker placement failed verification")
+            }
+            return
+        }
+
+        guard runtimeState.activeSession == originalSession else {
+            mutationLedger.cancel(windowID: windowID)
+            if let frameBefore = result.frameBefore {
+                activeMutationWindowIDs.insert(windowID)
+                _ = await windowSystem.setFrame(frameBefore, for: windowID)
+                activeMutationWindowIDs.remove(windowID)
+            }
+            invalidateAll(reason: "picker session changed during placement")
             return
         }
 
         stagedSession.group.verifiedFrames[windowID] = verifiedFrame
+        diagnostics.record(category: "mutation", "placement verified in \(result.attemptCount) attempt(s)")
         let generation = runtimeState.install(stagedSession)
         _ = windowSystem.raise(windowID: windowID)
 
@@ -214,6 +294,7 @@ final class AppCoordinator {
             runtimeState.cancelSession(removeIncompleteGroup: true)
             thumbnailTask?.cancel()
             thumbnailTask = nil
+            thumbnailCache.removeAll()
         } else {
             thumbnailCache = thumbnailCache.filter { id, _ in stagedSession.candidates.contains(where: { $0.id == id }) }
             pickerController.present(session: stagedSession, thumbnails: thumbnailCache)
@@ -250,10 +331,15 @@ final class AppCoordinator {
 
     private func invalidateAll(reason: String) {
         logger.notice("Invalidating volatile state: \(reason, privacy: .public)")
+        diagnostics.record(category: "lifecycle", "invalidated: \(reason)")
         pendingDetections.values.forEach { $0.cancel() }
         pendingDetections.removeAll()
         thumbnailTask?.cancel()
         thumbnailTask = nil
+        placementTask?.cancel()
+        placementTask = nil
+        placementGate.cancel()
+        activeMutationWindowIDs.removeAll()
         thumbnailCache.removeAll()
         mutationLedger.cancelAll()
         runtimeState.invalidateAll()

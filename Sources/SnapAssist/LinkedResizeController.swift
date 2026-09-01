@@ -14,7 +14,7 @@ final class LinkedResizeController {
         let driverWindowID: String
     }
 
-    private let windowSystem: WindowSystem
+    private let windowSystem: any WindowControlling
     private let groupsProvider: GroupsProvider
     private let mutationRegistered: MutationRegistrationHandler
     private let shouldIgnore: () -> Bool
@@ -32,7 +32,7 @@ final class LinkedResizeController {
     var monitorInstalled: Bool { eventMonitor != nil }
 
     init(
-        windowSystem: WindowSystem,
+        windowSystem: any WindowControlling,
         groupsProvider: @escaping GroupsProvider,
         mutationRegistered: @escaping MutationRegistrationHandler,
         shouldIgnore: @escaping () -> Bool,
@@ -124,6 +124,12 @@ final class LinkedResizeController {
     private func finish() {
         guard let drag = activeDrag else { return }
         activeDrag = nil
+        Task { [weak self] in
+            await self?.finish(drag)
+        }
+    }
+
+    private func finish(_ drag: ActiveDrag) async {
 
         let windows = windowSystem.visibleWindows()
         let windowsByID = Dictionary(uniqueKeysWithValues: windows.map { ($0.id, $0) })
@@ -159,7 +165,7 @@ final class LinkedResizeController {
         verifiedFrames[drag.driverWindowID] = driver.frame
         for (windowID, targetFrame) in frames where windowID != drag.driverWindowID {
             mutationRegistered(operationID, windowID, targetFrame)
-            let result = windowSystem.setFrame(targetFrame, for: windowID)
+            let result = await windowSystem.setFrame(targetFrame, for: windowID)
             guard result.succeeded, let frameAfter = result.frameAfter else {
                 onFailure()
                 return

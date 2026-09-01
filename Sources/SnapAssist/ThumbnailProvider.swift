@@ -3,6 +3,7 @@ import CoreGraphics
 import ScreenCaptureKit
 import SnapAssistCore
 
+@MainActor
 final class ThumbnailProvider {
     func thumbnails(for windows: [WindowDescriptor]) async -> [String: NSImage] {
         guard CGPreflightScreenCaptureAccess(), !windows.isEmpty else { return [:] }

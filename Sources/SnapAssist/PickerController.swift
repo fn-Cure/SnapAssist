@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 import SnapAssistCore
 import SwiftUI
 
@@ -11,6 +12,8 @@ final class PickerZoneModel: ObservableObject {
     let icons: [String: NSImage]
     @Published var active: Bool
     @Published var selectedCandidateID: String?
+    @Published var errorMessage: String?
+    @Published var isBusy: Bool
 
     init(
         zoneID: Int,
@@ -28,6 +31,8 @@ final class PickerZoneModel: ObservableObject {
         self.icons = icons
         self.active = active
         self.selectedCandidateID = selectedCandidateID
+        self.errorMessage = nil
+        self.isBusy = false
     }
 }
 
@@ -44,49 +49,86 @@ struct PickerZoneView: View {
                 Text(model.targetLabel)
                     .font(.headline)
                 Spacer()
+                if !model.thumbnails.isEmpty {
+                    Label("Vorschauen aktiv", systemImage: "eye.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Fenstervorschauen sind aktiv")
+                }
                 Text("Esc")
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
             }
 
-            ScrollView {
-                LazyVGrid(columns: columns, spacing: 10) {
-                    ForEach(model.candidates) { candidate in
-                        Button {
-                            onSelect(candidate.id, model.zoneID)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 6) {
-                                preview(for: candidate)
-                                    .frame(maxWidth: .infinity)
-                                    .aspectRatio(16 / 10, contentMode: .fit)
-                                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            if let errorMessage = model.errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .accessibilityLabel("Fehler: \(errorMessage)")
+            }
 
-                                HStack(spacing: 6) {
-                                    if let icon = model.icons[candidate.id] {
-                                        Image(nsImage: icon)
-                                            .resizable()
-                                            .frame(width: 18, height: 18)
-                                    }
-                                    VStack(alignment: .leading, spacing: 1) {
-                                        Text(candidate.title.isEmpty ? candidate.appName : candidate.title)
-                                            .lineLimit(1)
-                                            .font(.caption.weight(.medium))
-                                        Text(candidate.appName)
-                                            .lineLimit(1)
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
+            if model.isBusy {
+                ProgressView("Fenster wird platziert…")
+                    .controlSize(.small)
+                    .accessibilityLabel("Fenster wird platziert")
+            }
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVGrid(columns: columns, spacing: 10) {
+                        ForEach(model.candidates) { candidate in
+                            Button {
+                                onSelect(candidate.id, model.zoneID)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    preview(for: candidate)
+                                        .frame(maxWidth: .infinity)
+                                        .aspectRatio(16 / 10, contentMode: .fit)
+                                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                                    HStack(spacing: 6) {
+                                        if let icon = model.icons[candidate.id] {
+                                            Image(nsImage: icon)
+                                                .resizable()
+                                                .frame(width: 18, height: 18)
+                                        }
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text(candidate.title.isEmpty ? candidate.appName : candidate.title)
+                                                .lineLimit(1)
+                                                .font(.caption.weight(.medium))
+                                            Text(candidate.appName)
+                                                .lineLimit(1)
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                        }
                                     }
                                 }
+                                .padding(7)
+                                .background(cardBackground(for: candidate))
                             }
-                            .padding(7)
-                            .background(cardBackground(for: candidate))
+                            .id(candidate.id)
+                            .buttonStyle(.plain)
+                            .disabled(model.isBusy)
+                            .accessibilityRepresentation {
+                                Button {
+                                    onSelect(candidate.id, model.zoneID)
+                                } label: {
+                                    Text(candidateAccessibilityLabel(candidate))
+                                }
+                                .accessibilityLabel(Text(candidateAccessibilityLabel(candidate)))
+                                .accessibilityValue(Text(candidateAccessibilityLabel(candidate)))
+                                .accessibilityHint("In \(model.targetLabel) platzieren")
+                                .accessibilityAddTraits(
+                                    model.active && model.selectedCandidateID == candidate.id ? .isSelected : []
+                                )
+                                .disabled(model.isBusy)
+                            }
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("\(candidate.appName), \(candidate.title)")
-                        .accessibilityAddTraits(
-                            model.active && model.selectedCandidateID == candidate.id ? .isSelected : []
-                        )
                     }
+                }
+                .onChange(of: model.selectedCandidateID) { _, candidateID in
+                    guard model.active, let candidateID else { return }
+                    proxy.scrollTo(candidateID, anchor: .center)
                 }
             }
         }
@@ -128,6 +170,12 @@ struct PickerZoneView: View {
             ? AnyShapeStyle(Color.accentColor.opacity(0.22))
             : AnyShapeStyle(Color.primary.opacity(0.07))
     }
+
+    private func candidateAccessibilityLabel(_ candidate: WindowDescriptor) -> String {
+        candidate.title.isEmpty || candidate.title == candidate.appName
+            ? candidate.appName
+            : "\(candidate.appName), \(candidate.title)"
+    }
 }
 
 final class PickerPanel: NSPanel {
@@ -146,11 +194,13 @@ final class PickerController {
     private var localKeyMonitor: Any?
     private var localMouseMonitor: Any?
     private var globalMouseMonitor: Any?
+    private let logger = Logger(subsystem: "com.caner.snapassist", category: "Picker")
+    private let diagnostics = DiagnosticsStore.shared
 
     var isVisible: Bool { !panels.isEmpty }
 
     func present(session: AssistSession, thumbnails: [String: NSImage]) {
-        dismiss(notify: false)
+        dismiss(notify: false, reason: "replace presentation")
         guard !session.emptyZoneIDs.isEmpty, !session.candidates.isEmpty else { return }
 
         navigation = PickerNavigation(
@@ -177,6 +227,10 @@ final class PickerController {
                 backing: .buffered,
                 defer: false
             )
+            let accessibilityTitle = "SnapAssist – \(model.targetLabel)"
+            panel.title = accessibilityTitle
+            panel.setAccessibilityRole(.window)
+            panel.setAccessibilityLabel(accessibilityTitle)
             panel.level = .popUpMenu
             panel.isOpaque = false
             panel.backgroundColor = .clear
@@ -196,6 +250,13 @@ final class PickerController {
         if let activeZone = navigation.activeZoneID {
             panels[activeZone]?.makeKey()
         }
+        logger.notice(
+            "Presented \(self.panels.count) picker panel(s) for zones=\(session.emptyZoneIDs, privacy: .public) candidates=\(session.candidates.count) frames=\(session.emptyZoneIDs.map { String(describing: session.group.layout.zoneFrames[$0]) }, privacy: .public)"
+        )
+        diagnostics.record(
+            category: "picker",
+            "presented panels=\(panels.count), candidates=\(session.candidates.count)"
+        )
     }
 
     func updateThumbnails(_ thumbnails: [String: NSImage]) {
@@ -205,7 +266,25 @@ final class PickerController {
         }
     }
 
-    func dismiss(notify: Bool = true) {
+    func showError(_ message: String) {
+        for model in models.values {
+            model.errorMessage = message
+        }
+        NSSound.beep()
+    }
+
+    func setBusy(_ busy: Bool) {
+        for model in models.values {
+            model.isBusy = busy
+            if busy { model.errorMessage = nil }
+        }
+    }
+
+    func dismiss(notify: Bool = true, reason: String = "requested") {
+        if !panels.isEmpty {
+            logger.notice("Dismissed \(self.panels.count) picker panel(s): \(reason, privacy: .public)")
+            diagnostics.record(category: "picker", "dismissed panels=\(panels.count), reason=\(reason)")
+        }
         removeEventMonitors()
         panels.values.forEach { $0.orderOut(nil) }
         panels.removeAll()
@@ -238,7 +317,7 @@ final class PickerController {
     private func handleKey(_ event: NSEvent) -> Bool {
         switch event.keyCode {
         case 53:
-            dismiss()
+            dismiss(reason: "Escape")
         case 48:
             navigation.moveZone(by: event.modifierFlags.contains(.shift) ? -1 : 1)
             updateSelection()
@@ -249,6 +328,7 @@ final class PickerController {
             navigation.moveCandidate(by: 1)
             updateSelection()
         case 36, 76:
+            guard !models.values.contains(where: \.isBusy) else { return true }
             if let windowID = navigation.selectedCandidateID,
                let zoneID = navigation.activeZoneID {
                 onSelect?(windowID, zoneID)
@@ -271,7 +351,7 @@ final class PickerController {
 
     private func cancelIfOutsidePanels(point: CGPoint) {
         guard panels.values.allSatisfy({ !$0.frame.contains(point) }) else { return }
-        dismiss()
+        dismiss(reason: "outside click at \(point)")
     }
 
 

@@ -1,4 +1,4 @@
-// swift-tools-version: 6.2
+// swift-tools-version: 6.3
 
 import PackageDescription
 
@@ -8,14 +8,15 @@ let package = Package(
     products: [
         .library(name: "SnapAssistCore", targets: ["SnapAssistCore"]),
         .executable(name: "SnapAssist", targets: ["SnapAssist"]),
+        .executable(name: "SnapAssistFixture", targets: ["SnapAssistFixture"]),
     ],
     targets: [
         .target(name: "SnapAssistCore"),
         .executableTarget(
             name: "SnapAssist",
-            dependencies: ["SnapAssistCore"],
-            swiftSettings: [.swiftLanguageMode(.v5)]
+            dependencies: ["SnapAssistCore"]
         ),
+        .executableTarget(name: "SnapAssistFixture"),
         .testTarget(name: "SnapAssistCoreTests", dependencies: ["SnapAssistCore"]),
     ]
 )

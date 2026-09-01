@@ -31,6 +31,8 @@ struct WindowMutationResult {
     let sizeErrors: [AXError]
     let positionError: AXError?
     let verification: WindowMutationVerification
+    let attemptCount: Int
+    let rolledBack: Bool
 
     var succeeded: Bool { verification == .verified }
 }
@@ -51,7 +53,16 @@ final class WindowSystem {
         }
     }
 
-    var isEnabled = true
+    var isEnabled = true {
+        didSet {
+            guard isEnabled != oldValue else { return }
+            if isEnabled {
+                resumeObservationIfStarted()
+            } else {
+                suspendObservation()
+            }
+        }
+    }
     var onEvent: ((WindowSystemEvent) -> Void)?
 
     private var records: [String: WindowRecord] = [:]
@@ -59,27 +70,39 @@ final class WindowSystem {
     private var workspaceObservers: [NSObjectProtocol] = []
     private var notificationObservers: [NSObjectProtocol] = []
     private var permissionTimer: Timer?
+    private var geometryPollTimer: DispatchSourceTimer?
     private var lastAccessibilityTrust = AXIsProcessTrusted()
+    private var lastScreenRecordingPermission = CGPreflightScreenCaptureAccess()
+    private var observerRetryWorkItems: [pid_t: DispatchWorkItem] = [:]
+    private var observerRetryAttempts: [pid_t: Int] = [:]
+    private var degradedObserverPIDs: Set<pid_t> = []
+    private var lastPolledCGFrames: [String: CGRect] = [:]
     private let logger = Logger(subsystem: "com.caner.snapassist", category: "WindowSystem")
+    private let diagnostics = DiagnosticsStore.shared
     private(set) var observerFailureCount = 0
     private(set) var lastMutationFailureDescription: String?
 
     var isAccessibilityTrusted: Bool {
-        AXIsProcessTrusted()
+        lastAccessibilityTrust
     }
 
     var hasScreenRecordingPermission: Bool {
-        CGPreflightScreenCaptureAccess()
+        lastScreenRecordingPermission
     }
 
+    var degradedObserverCount: Int { degradedObserverPIDs.count }
+
     func requestAccessibilityPermission(prompt: Bool) -> Bool {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt] as CFDictionary
-        return AXIsProcessTrustedWithOptions(options)
+        let options = ["AXTrustedCheckOptionPrompt": prompt] as CFDictionary
+        let trusted = AXIsProcessTrustedWithOptions(options)
+        refreshAccessibilityState()
+        return trusted
     }
 
     func requestScreenRecordingPermission() {
-        if !CGPreflightScreenCaptureAccess() {
+        if !lastScreenRecordingPermission {
             _ = CGRequestScreenCaptureAccess()
+            refreshAccessibilityState()
         }
     }
 
@@ -108,8 +131,10 @@ final class WindowSystem {
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor in
-                    self?.refreshObservers()
-                    self?.onEvent?(.inventoryChanged)
+                    guard let self, self.isEnabled else { return }
+                    self.refreshObservers()
+                    self.onEvent?(.inventoryChanged)
+                    self.pollKnownWindowGeometry()
                 }
             })
         }
@@ -134,7 +159,7 @@ final class WindowSystem {
         ) { [weak self] _ in
             Task { @MainActor in self?.onEvent?(.environmentChanged) }
         })
-        refreshObservers()
+        resumeObservationIfStarted()
         permissionTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshAccessibilityState() }
         }
@@ -148,28 +173,26 @@ final class WindowSystem {
         notificationObservers.removeAll()
         permissionTimer?.invalidate()
         permissionTimer = nil
-        for observer in observers.values {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
-        }
-        observers.removeAll()
-        records.removeAll()
+        suspendObservation()
     }
 
     func refreshAccessibilityState() {
-        let trusted = isAccessibilityTrusted
-        guard trusted != lastAccessibilityTrust else {
+        let trusted = AXIsProcessTrusted()
+        let screenRecordingGranted = CGPreflightScreenCaptureAccess()
+        let trustChanged = trusted != lastAccessibilityTrust
+        let screenRecordingChanged = screenRecordingGranted != lastScreenRecordingPermission
+        guard trustChanged || screenRecordingChanged else {
             if trusted && observers.isEmpty { refreshObservers() }
             return
         }
         lastAccessibilityTrust = trusted
-        if trusted {
-            refreshObservers()
-        } else {
-            for observer in observers.values {
-                CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+        lastScreenRecordingPermission = screenRecordingGranted
+        if trustChanged {
+            if trusted {
+                resumeObservationIfStarted()
+            } else {
+                suspendObservation()
             }
-            observers.removeAll()
-            records.removeAll()
         }
         onEvent?(.environmentChanged)
     }
@@ -248,12 +271,16 @@ final class WindowSystem {
     }
 
     func frame(for windowID: String) -> CGRect? {
-        guard let record = records[windowID] else { return nil }
-        return frame(of: record.element)
+        if let record = records[windowID] {
+            return frame(of: record.element)
+        }
+        return onscreenWindowMetadata().first { metadata in
+            self.windowID(processID: metadata.processID, cgWindowID: metadata.windowID) == windowID
+        }?.frame
     }
 
     @discardableResult
-    func setFrame(_ cocoaFrame: CGRect, for windowID: String) -> WindowMutationResult {
+    func setFrame(_ cocoaFrame: CGRect, for windowID: String) async -> WindowMutationResult {
         guard let record = records[windowID] else {
             let result = WindowMutationResult(
                 requestedFrame: cocoaFrame,
@@ -261,7 +288,9 @@ final class WindowSystem {
                 frameAfter: nil,
                 sizeErrors: [],
                 positionError: nil,
-                verification: .unavailable
+                verification: .unavailable,
+                attemptCount: 0,
+                rolledBack: false
             )
             lastMutationFailureDescription = "Fenster ist nicht mehr verfügbar"
             return result
@@ -282,7 +311,9 @@ final class WindowSystem {
                 frameAfter: frameBefore,
                 sizeErrors: [.illegalArgument],
                 positionError: .illegalArgument,
-                verification: .failed
+                verification: .failed,
+                attemptCount: 0,
+                rolledBack: false
             )
             lastMutationFailureDescription = "AX-Werte konnten nicht erzeugt werden"
             return result
@@ -290,36 +321,276 @@ final class WindowSystem {
 
         var sizeErrors: [AXError] = []
         var positionError: AXError?
-        if frameBefore?.size.isApproximatelyEqual(to: cocoaFrame.size, tolerance: 1) != true {
-            let result = AXUIElementSetAttributeValue(record.element, kAXSizeAttribute as CFString, sizeValue)
-            if result != .success { sizeErrors.append(result) }
-        }
-        if frameBefore?.origin.isApproximatelyEqual(to: cocoaFrame.origin, tolerance: 1) != true {
-            let result = AXUIElementSetAttributeValue(record.element, kAXPositionAttribute as CFString, pointValue)
-            if result != .success { positionError = result }
-        }
-        let finalSizeResult = AXUIElementSetAttributeValue(record.element, kAXSizeAttribute as CFString, sizeValue)
-        if finalSizeResult != .success { sizeErrors.append(finalSizeResult) }
+        var attemptCount = 0
 
-        let frameAfter = frame(of: record.element)
+        let firstWrite = writeFrame(
+            element: record.element,
+            pointValue: pointValue,
+            sizeValue: sizeValue,
+            order: .positionSizePosition
+        )
+        attemptCount += 1
+        sizeErrors.append(contentsOf: firstWrite.sizeErrors)
+        positionError = firstWrite.positionError
+
+        var readback = await waitForFrame(
+            cocoaFrame,
+            element: record.element,
+            maximumSamples: 8,
+            intervalNanoseconds: 30_000_000
+        )
+
+        if Task.isCancelled {
+            let restoreResult = await restoreFrame(frameBefore, element: record.element)
+            return mutationResult(
+                requestedFrame: cocoaFrame,
+                frameBefore: frameBefore,
+                readback: readback,
+                sizeErrors: sizeErrors,
+                positionError: positionError,
+                attemptCount: attemptCount,
+                restoreResult: restoreResult,
+                processID: record.processID,
+                cgWindowID: record.cgWindowID
+            )
+        }
+
+        if case .verified = readback {
+            return mutationResult(
+                requestedFrame: cocoaFrame,
+                frameBefore: frameBefore,
+                readback: readback,
+                sizeErrors: sizeErrors,
+                positionError: positionError,
+                attemptCount: attemptCount,
+                processID: record.processID,
+                cgWindowID: record.cgWindowID
+            )
+        }
+
+        let secondWrite = writeFrame(
+            element: record.element,
+            pointValue: pointValue,
+            sizeValue: sizeValue,
+            order: .sizePositionSize
+        )
+        attemptCount += 1
+        sizeErrors.append(contentsOf: secondWrite.sizeErrors)
+        if secondWrite.positionError != nil { positionError = secondWrite.positionError }
+        readback = await waitForFrame(
+            cocoaFrame,
+            element: record.element,
+            maximumSamples: 8,
+            intervalNanoseconds: 30_000_000
+        )
+
+        if case .verified = readback {
+            return mutationResult(
+                requestedFrame: cocoaFrame,
+                frameBefore: frameBefore,
+                readback: readback,
+                sizeErrors: sizeErrors,
+                positionError: positionError,
+                attemptCount: attemptCount,
+                processID: record.processID,
+                cgWindowID: record.cgWindowID
+            )
+        }
+
+        let restoreResult = await restoreFrame(frameBefore, element: record.element)
+
+        return mutationResult(
+            requestedFrame: cocoaFrame,
+            frameBefore: frameBefore,
+            readback: readback,
+            sizeErrors: sizeErrors,
+            positionError: positionError,
+            attemptCount: attemptCount,
+            restoreResult: restoreResult,
+            processID: record.processID,
+            cgWindowID: record.cgWindowID
+        )
+    }
+
+    private enum FrameWriteOrder {
+        case positionSizePosition
+        case sizePositionSize
+    }
+
+    private func writeFrame(
+        element: AXUIElement,
+        pointValue: AXValue,
+        sizeValue: AXValue,
+        order: FrameWriteOrder
+    ) -> (sizeErrors: [AXError], positionError: AXError?) {
+        let attributes: [(String, AXValue)]
+        switch order {
+        case .positionSizePosition:
+            attributes = [
+                (kAXPositionAttribute, pointValue),
+                (kAXSizeAttribute, sizeValue),
+                (kAXPositionAttribute, pointValue),
+            ]
+        case .sizePositionSize:
+            attributes = [
+                (kAXSizeAttribute, sizeValue),
+                (kAXPositionAttribute, pointValue),
+                (kAXSizeAttribute, sizeValue),
+            ]
+        }
+
+        var sizeErrors: [AXError] = []
+        var positionError: AXError?
+        for (attribute, value) in attributes {
+            let result = AXUIElementSetAttributeValue(element, attribute as CFString, value)
+            guard result != .success else { continue }
+            if attribute == kAXSizeAttribute {
+                sizeErrors.append(result)
+            } else {
+                positionError = result
+            }
+        }
+        return (sizeErrors, positionError)
+    }
+
+    private func waitForFrame(
+        _ requestedFrame: CGRect,
+        element: AXUIElement,
+        maximumSamples: Int,
+        intervalNanoseconds: UInt64,
+        ignoreCancellation: Bool = false
+    ) async -> FrameReadbackDecision {
+        var verifier = FrameReadbackVerifier(
+            requestedFrame: requestedFrame,
+            tolerance: 4,
+            maximumSamples: maximumSamples
+        )
+        for index in 0..<maximumSamples {
+            guard ignoreCancellation || !Task.isCancelled else { return .unavailable }
+            let decision = verifier.observe(frame(of: element))
+            if decision != .pending { return decision }
+            if index + 1 < maximumSamples {
+                do {
+                    if ignoreCancellation {
+                        await withCheckedContinuation { continuation in
+                            DispatchQueue.main.asyncAfter(deadline: .now() + .nanoseconds(Int(intervalNanoseconds))) {
+                                continuation.resume()
+                            }
+                        }
+                    } else {
+                        try await Task.sleep(nanoseconds: intervalNanoseconds)
+                    }
+                } catch {
+                    return .unavailable
+                }
+            }
+        }
+        return .unavailable
+    }
+
+    private struct FrameRestoreResult {
+        let verified: Bool
+        let frameAfter: CGRect?
+    }
+
+    private func restoreFrame(_ cocoaFrame: CGRect?, element: AXUIElement) async -> FrameRestoreResult {
+        guard let cocoaFrame else {
+            return FrameRestoreResult(verified: false, frameAfter: frame(of: element))
+        }
+        let axFrame = ScreenCoordinateConverter.cocoaToAX(
+            cocoaFrame,
+            primaryScreenHeight: primaryScreenHeight
+        )
+        var point = axFrame.origin
+        var size = axFrame.size
+        guard let pointValue = AXValueCreate(.cgPoint, &point),
+              let sizeValue = AXValueCreate(.cgSize, &size) else {
+            return FrameRestoreResult(verified: false, frameAfter: frame(of: element))
+        }
+
+        var latestFrame = frame(of: element)
+        for order in [FrameWriteOrder.positionSizePosition, .sizePositionSize] {
+            _ = writeFrame(
+                element: element,
+                pointValue: pointValue,
+                sizeValue: sizeValue,
+                order: order
+            )
+            let readback = await waitForFrame(
+                cocoaFrame,
+                element: element,
+                maximumSamples: 10,
+                intervalNanoseconds: 40_000_000,
+                ignoreCancellation: true
+            )
+            switch readback {
+            case let .verified(frame):
+                return FrameRestoreResult(verified: true, frameAfter: frame)
+            case let .mismatched(frame):
+                latestFrame = frame
+            case .pending, .unavailable:
+                latestFrame = frame(of: element)
+            }
+        }
+        return FrameRestoreResult(verified: false, frameAfter: latestFrame)
+    }
+
+    private func mutationResult(
+        requestedFrame: CGRect,
+        frameBefore: CGRect?,
+        readback: FrameReadbackDecision,
+        sizeErrors: [AXError],
+        positionError: AXError?,
+        attemptCount: Int,
+        restoreResult: FrameRestoreResult? = nil,
+        processID: pid_t,
+        cgWindowID: CGWindowID
+    ) -> WindowMutationResult {
+        let observedFrameAfter: CGRect?
         let verification: WindowMutationVerification
-        if frameAfter?.isApproximatelyEqual(to: cocoaFrame, tolerance: 4) == true {
+        switch readback {
+        case let .verified(frame):
+            observedFrameAfter = frame
             verification = .verified
             lastMutationFailureDescription = nil
-        } else if frameAfter != nil && sizeErrors.isEmpty && positionError == nil {
-            verification = .clamped
-            lastMutationFailureDescription = "Ziel-App hat die Fenstergröße begrenzt"
-        } else {
+        case let .mismatched(frame):
+            observedFrameAfter = frame
+            verification = sizeErrors.isEmpty && positionError == nil ? .clamped : .failed
+            lastMutationFailureDescription = "Ziel-App hat Position oder Größe nicht übernommen"
+        case .unavailable:
+            observedFrameAfter = nil
+            verification = .unavailable
+            lastMutationFailureDescription = "Fenster-Frame konnte nicht verifiziert werden"
+        case .pending:
+            observedFrameAfter = nil
             verification = .failed
-            lastMutationFailureDescription = "AX-Frameänderung fehlgeschlagen"
+            lastMutationFailureDescription = "Fenster-Frame blieb instabil"
         }
+        let didRestore = restoreResult?.verified ?? false
+        let frameAfter: CGRect?
+        if let restoreResult {
+            frameAfter = restoreResult.frameAfter
+        } else {
+            frameAfter = observedFrameAfter
+        }
+
+        logger.notice(
+            "AX mutation pid=\(processID) cgWindowID=\(cgWindowID) verification=\(verification.rawValue, privacy: .public) attempts=\(attemptCount) rolledBack=\(didRestore) before=\(String(describing: frameBefore), privacy: .public) requested=\(String(describing: requestedFrame), privacy: .public) after=\(String(describing: frameAfter), privacy: .public) sizeErrors=\(sizeErrors.map(\.rawValue), privacy: .public) positionError=\(String(describing: positionError?.rawValue), privacy: .public)"
+        )
+        diagnostics.record(
+            category: "mutation",
+            "pid=\(processID), window=\(cgWindowID), verification=\(verification.rawValue), attempts=\(attemptCount), rolledBack=\(didRestore)"
+        )
+
         return WindowMutationResult(
-            requestedFrame: cocoaFrame,
+            requestedFrame: requestedFrame,
             frameBefore: frameBefore,
             frameAfter: frameAfter,
             sizeErrors: sizeErrors,
             positionError: positionError,
-            verification: verification
+            verification: verification,
+            attemptCount: attemptCount,
+            rolledBack: didRestore
         )
     }
 
@@ -347,7 +618,7 @@ final class WindowSystem {
     }
 
     private func refreshObservers() {
-        guard isAccessibilityTrusted else {
+        guard isEnabled, isAccessibilityTrusted else {
             logger.error("Cannot install AX observers because Accessibility is not trusted")
             return
         }
@@ -355,6 +626,9 @@ final class WindowSystem {
         for (pid, observer) in observers where !runningPIDs.contains(pid) {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
             observers.removeValue(forKey: pid)
+            degradedObserverPIDs.remove(pid)
+            observerRetryWorkItems.removeValue(forKey: pid)?.cancel()
+            observerRetryAttempts.removeValue(forKey: pid)
         }
 
         for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular
@@ -363,6 +637,7 @@ final class WindowSystem {
             installObserver(for: app.processIdentifier)
         }
         logger.debug("Active AX observers: \(self.observers.count)")
+        updateFocusedPollTimer()
     }
 
     private func installObserver(for processID: pid_t) {
@@ -384,8 +659,7 @@ final class WindowSystem {
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
     }
 
-    fileprivate func handle(notification: CFString, element: AXUIElement) {
-        let notificationName = notification as String
+    fileprivate func handle(notification notificationName: String, element: AXUIElement) {
         logger.debug("Received AX notification: \(notificationName, privacy: .public)")
         if notificationName == kAXWindowCreatedNotification as String {
             var processID: pid_t = 0
@@ -401,6 +675,9 @@ final class WindowSystem {
             || notificationName == kAXResizedNotification as String {
             var processID: pid_t = 0
             AXUIElementGetPid(element, &processID)
+            degradedObserverPIDs.remove(processID)
+            observerRetryAttempts.removeValue(forKey: processID)
+            updateFocusedPollTimer()
             guard let windowID = resolveWindowID(processID: processID, element: element) else {
                 onEvent?(.inventoryChanged)
                 return
@@ -428,10 +705,115 @@ final class WindowSystem {
     private func add(notification: String, element: AXUIElement, observer: AXObserver) {
         let refcon = Unmanaged.passUnretained(self).toOpaque()
         let result = AXObserverAddNotification(observer, element, notification as CFString, refcon)
+        if result == .invalidUIElement || result == .cannotComplete {
+            var processID: pid_t = 0
+            AXUIElementGetPid(element, &processID)
+            let inserted = degradedObserverPIDs.insert(processID).inserted
+            logger.debug("Deferring AX observer registration for transient error \(result.rawValue) in pid \(processID)")
+            if inserted {
+                diagnostics.record(category: "observer", "pid=\(processID) entered fallback after AX error \(result.rawValue)")
+            }
+            scheduleObserverRetry(for: processID)
+            updateFocusedPollTimer()
+            return
+        }
         if result != .success && result != .notificationAlreadyRegistered && result != .notificationUnsupported {
             observerFailureCount += 1
             logger.error("AXObserverAddNotification failed for \(notification, privacy: .public) with code \(result.rawValue)")
+            diagnostics.record(category: "observer", "registration failed with AX error \(result.rawValue)")
         }
+    }
+
+    private func scheduleObserverRetry(for processID: pid_t) {
+        guard processID > 0,
+              observerRetryWorkItems[processID] == nil,
+              observerRetryAttempts[processID, default: 0] < 3 else { return }
+        let attempt = observerRetryAttempts[processID, default: 0] + 1
+        observerRetryAttempts[processID] = attempt
+        var item: DispatchWorkItem!
+        item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.observerRetryWorkItems.removeValue(forKey: processID)
+            guard !item.isCancelled, let observer = self.observers[processID] else { return }
+            let appElement = AXUIElementCreateApplication(processID)
+            self.add(notification: kAXWindowCreatedNotification, element: appElement, observer: observer)
+            self.add(notification: kAXFocusedWindowChangedNotification, element: appElement, observer: observer)
+            for window in self.windows(of: appElement) {
+                self.observe(window: window, with: observer)
+            }
+        }
+        observerRetryWorkItems[processID] = item
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + 0.25 * Double(attempt),
+            execute: item
+        )
+    }
+
+    private func updateFocusedPollTimer() {
+        guard isEnabled, geometryPollTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + 0.5, repeating: 0.5, leeway: .milliseconds(100))
+        timer.setEventHandler { [weak self] in self?.pollKnownWindowGeometry() }
+        geometryPollTimer = timer
+        timer.resume()
+        logger.notice("Started CG geometry fallback polling")
+    }
+
+    private func resumeObservationIfStarted() {
+        guard isEnabled, isAccessibilityTrusted, !workspaceObservers.isEmpty else { return }
+        refreshObservers()
+        _ = visibleWindows()
+        seedKnownWindowGeometry()
+        updateFocusedPollTimer()
+    }
+
+    private func suspendObservation() {
+        geometryPollTimer?.cancel()
+        geometryPollTimer = nil
+        observerRetryWorkItems.values.forEach { $0.cancel() }
+        observerRetryWorkItems.removeAll()
+        observerRetryAttempts.removeAll()
+        degradedObserverPIDs.removeAll()
+        lastPolledCGFrames.removeAll()
+        for observer in observers.values {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+        }
+        observers.removeAll()
+        records.removeAll()
+        logger.notice("Suspended window observation")
+    }
+
+    private func seedKnownWindowGeometry() {
+        lastPolledCGFrames = Dictionary(uniqueKeysWithValues: onscreenWindowMetadata().compactMap { item in
+            guard item.processID != ProcessInfo.processInfo.processIdentifier,
+                  item.frame.width >= 80,
+                  item.frame.height >= 60 else { return nil }
+            let id = windowID(processID: item.processID, cgWindowID: item.windowID)
+            return (id, item.frame)
+        })
+    }
+
+    private func pollKnownWindowGeometry() {
+        guard isEnabled, isAccessibilityTrusted else { return }
+        let metadata = onscreenWindowMetadata()
+        let currentFrames = Dictionary(uniqueKeysWithValues: metadata.compactMap { item -> (String, CGRect)? in
+            guard item.processID != ProcessInfo.processInfo.processIdentifier,
+                  item.frame.width >= 80,
+                  item.frame.height >= 60 else { return nil }
+            let id = windowID(processID: item.processID, cgWindowID: item.windowID)
+            return (id, item.frame)
+        })
+        let previousFrames = lastPolledCGFrames
+        lastPolledCGFrames = currentFrames
+
+        let inventoryChanged = previousFrames.keys.contains { currentFrames[$0] == nil }
+        for (windowID, currentFrame) in currentFrames {
+            guard let previousFrame = previousFrames[windowID] else { continue }
+            guard !previousFrame.isApproximatelyEqual(to: currentFrame, tolerance: 2) else { continue }
+            logger.debug("CG polling detected geometry change window=\(windowID, privacy: .public) from=\(String(describing: previousFrame), privacy: .public) to=\(String(describing: currentFrame), privacy: .public)")
+            onEvent?(.geometryChanged(windowID: windowID))
+        }
+        if inventoryChanged { onEvent?(.inventoryChanged) }
     }
 
     private func windows(of appElement: AXUIElement) -> [AXUIElement] {
@@ -548,8 +930,10 @@ final class WindowSystem {
                   let boundsValue = dictionary[kCGWindowBounds] else {
                 return nil
             }
-            let boundsDictionary = boundsValue as! CFDictionary
-            guard let axBounds = CGRect(dictionaryRepresentation: boundsDictionary) else { return nil }
+            guard let boundsDictionary = boundsValue as? NSDictionary else { return nil }
+            guard let axBounds = CGRect(dictionaryRepresentation: boundsDictionary) else {
+                return nil
+            }
             return WindowMetadata(
                 windowID: CGWindowID(windowNumber.uint32Value),
                 processID: ownerPID.int32Value,
@@ -607,10 +991,20 @@ private func windowSystemObserverCallback(
     refcon: UnsafeMutableRawPointer?
 ) {
     guard let refcon else { return }
-    let system = Unmanaged<WindowSystem>.fromOpaque(refcon).takeUnretainedValue()
+    let payload = WindowSystemObserverPayload(
+        system: Unmanaged<WindowSystem>.fromOpaque(refcon).takeUnretainedValue(),
+        element: element,
+        notification: notification as String
+    )
     Task { @MainActor in
-        system.handle(notification: notification, element: element)
+        payload.system.handle(notification: payload.notification, element: payload.element)
     }
+}
+
+private struct WindowSystemObserverPayload: @unchecked Sendable {
+    let system: WindowSystem
+    let element: AXUIElement
+    let notification: String
 }
 
 private extension CGRect {
