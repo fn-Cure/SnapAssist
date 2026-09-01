@@ -5,6 +5,8 @@ import ServiceManagement
 final class AppPreferencesModel: ObservableObject {
     private enum Keys {
         static let onboardingCompleted = "onboardingCompleted"
+        static let isEnabled = "isEnabled"
+        static let linkedResizingEnabled = "linkedResizingEnabled"
     }
 
     private let coordinator: AppCoordinator
@@ -34,8 +36,13 @@ final class AppPreferencesModel: ObservableObject {
 
     init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
-        self.isEnabled = coordinator.isEnabled
-        self.linkedResizingEnabled = coordinator.linkedResizingEnabled
+        let defaults = UserDefaults.standard
+        let persistedEnabled = defaults.object(forKey: Keys.isEnabled) as? Bool ?? true
+        let persistedLinkedResizing = defaults.object(forKey: Keys.linkedResizingEnabled) as? Bool ?? false
+        coordinator.isEnabled = persistedEnabled
+        coordinator.linkedResizingEnabled = persistedLinkedResizing
+        self.isEnabled = persistedEnabled
+        self.linkedResizingEnabled = persistedLinkedResizing
         self.accessibilityTrusted = coordinator.windowSystem.isAccessibilityTrusted
         self.screenRecordingGranted = coordinator.windowSystem.hasScreenRecordingPermission
         self.launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
@@ -63,11 +70,13 @@ final class AppPreferencesModel: ObservableObject {
 
     func setEnabled(_ enabled: Bool) {
         isEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Keys.isEnabled)
         coordinator.isEnabled = enabled
     }
 
     func setLinkedResizingEnabled(_ enabled: Bool) {
         linkedResizingEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Keys.linkedResizingEnabled)
         coordinator.linkedResizingEnabled = enabled
     }
 
