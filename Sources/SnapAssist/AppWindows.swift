@@ -65,7 +65,7 @@ private struct SettingsRootView: View {
                 .tabItem { Label("Berechtigungen", systemImage: "checkmark.shield") }
             AboutSettingsView(model: model)
                 .tabItem { Label("Über SnapAssist", systemImage: "info.circle") }
-            PrivacySettingsView()
+            PrivacySettingsView(model: model)
                 .tabItem { Label("Datenschutz", systemImage: "hand.raised") }
         }
         .padding(20)
@@ -241,6 +241,10 @@ private struct AboutSettingsView: View {
             Divider().frame(maxWidth: 420)
             Label("Keine Netzwerkverbindung oder Analysefunktionen", systemImage: "hand.raised.fill")
                 .foregroundStyle(.secondary)
+            HStack {
+                Button("Nach Updates suchen…", action: model.checkForUpdates)
+                Button("Support öffnen…", action: model.openSupport)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(32)
@@ -249,6 +253,8 @@ private struct AboutSettingsView: View {
 
 @MainActor
 private struct PrivacySettingsView: View {
+    @ObservedObject var model: AppPreferencesModel
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
@@ -272,6 +278,8 @@ private struct PrivacySettingsView: View {
                 Text("Vorschaubilder und Fensterinformationen werden nicht gespeichert und beim Schließen des Pickers verworfen. Berechtigungen können jederzeit in den macOS-Systemeinstellungen entzogen werden.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                Button("Datenschutzrichtlinie online öffnen…", action: model.openPrivacyPolicy)
             }
             .frame(maxWidth: 500, alignment: .leading)
             .padding(24)

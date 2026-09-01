@@ -72,7 +72,7 @@ SNAPASSIST_NOTARY_PROFILE=SnapAssist-Notary scripts/package-release.sh
 scripts/verify-release.sh outputs/release/SnapAssist.dmg
 ```
 
-Ohne Developer-ID-Zertifikat oder Notary-Profil erzeugt das Release-Skript bewusst kein öffentliches Artefakt. Die lokale Datenschutzbeschreibung liegt unter [docs/privacy-policy.md](docs/privacy-policy.md); vor Veröffentlichung müssen ein öffentlicher Supportkontakt, ein Updateweg und eine stabile HTTPS-Version ergänzt werden.
+Ohne Developer-ID-Zertifikat oder Notary-Profil erzeugt das Release-Skript bewusst kein öffentliches Artefakt. Die [Datenschutzrichtlinie](https://github.com/fn-Cure/SnapAssist/blob/main/docs/privacy-policy.md), der [öffentliche Support](https://github.com/fn-Cure/SnapAssist/issues) und der [manuelle Updatekanal](https://github.com/fn-Cure/SnapAssist/releases) liegen im öffentlichen GitHub-Repository. SnapAssist lädt oder installiert nichts ungefragt.
 
 ## Integration Fixture
 

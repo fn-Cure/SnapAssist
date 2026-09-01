@@ -31,4 +31,4 @@ If a future version introduces networking, analytics, third-party SDKs, or persi
 
 ## Publisher contact
 
-A public support contact and stable HTTPS copy of this policy must be added before public distribution.
+The canonical HTTPS copy is <https://github.com/fn-Cure/SnapAssist/blob/main/docs/privacy-policy.md>. Questions and support requests can be submitted at <https://github.com/fn-Cure/SnapAssist/issues>.

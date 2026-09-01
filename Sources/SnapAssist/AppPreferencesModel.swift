@@ -34,6 +34,10 @@ final class AppPreferencesModel: ObservableObject {
         return "Version \(version) (\(build))"
     }
 
+    private let releasesURL = URL(string: "https://github.com/fn-Cure/SnapAssist/releases")!
+    private let supportURL = URL(string: "https://github.com/fn-Cure/SnapAssist/issues")!
+    private let privacyPolicyURL = URL(string: "https://github.com/fn-Cure/SnapAssist/blob/main/docs/privacy-policy.md")!
+
     init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
         let defaults = UserDefaults.standard
@@ -106,6 +110,18 @@ final class AppPreferencesModel: ObservableObject {
     func requestScreenRecording() {
         coordinator.windowSystem.requestScreenRecordingPermission()
         refresh()
+    }
+
+    func checkForUpdates() {
+        NSWorkspace.shared.open(releasesURL)
+    }
+
+    func openSupport() {
+        NSWorkspace.shared.open(supportURL)
+    }
+
+    func openPrivacyPolicy() {
+        NSWorkspace.shared.open(privacyPolicyURL)
     }
 
     func copyDiagnostics() {

@@ -9,7 +9,7 @@ Use this checklist for the exact DMG that will be published. A local development
 - [x] Universal release build contains `arm64` and `x86_64`.
 - [x] `Info.plist`, localized purpose strings, privacy manifest, and shell scripts validate locally.
 - [x] Development app passes strict code-signature verification and uses Hardened Runtime.
-- [ ] GitHub Actions check is green on the pull request. The prepared workflow cannot be pushed until the GitHub credential has `workflow` scope.
+- [x] GitHub Actions runs Swift 6.3 tests, the Universal release build, and script/manifest validation on `main`.
 
 ## Product acceptance
 
@@ -34,8 +34,8 @@ Use this checklist for the exact DMG that will be published. A local development
 
 - [ ] Developer ID Application certificate is installed and its stable identity is recorded.
 - [ ] A `notarytool` keychain profile is configured.
-- [ ] Stable public HTTPS download page, privacy-policy URL, support contact, and update policy exist.
-- [ ] Repository license and public/private repository decision are explicit.
+- [x] Stable public HTTPS release page, privacy-policy URL, support contact, and manual update policy exist.
+- [x] Repository is public and carries an explicit all-rights-reserved license.
 - [ ] `SNAPASSIST_NOTARY_PROFILE=<profile> scripts/package-release.sh` succeeds.
 - [ ] App notary result and DMG notary result both say `Accepted`; rejection logs contain no unresolved issue.
 - [ ] App and DMG tickets staple and validate.

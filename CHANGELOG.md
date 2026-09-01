@@ -2,6 +2,13 @@
 
 All notable user-facing changes to SnapAssist are documented here.
 
+## 0.3.8 — 2026-09-01
+
+### Added
+
+- Added in-app links to the public release page, support issues, and canonical HTTPS privacy policy.
+- Documented the manual, consent-based update policy; SnapAssist never downloads or installs updates automatically.
+
 ## 0.3.7 — 2026-09-01
 
 ### Fixed
