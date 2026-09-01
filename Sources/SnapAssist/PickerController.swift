@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 import SnapAssistCore
 import SwiftUI
 
@@ -155,11 +156,13 @@ final class PickerController {
     private var localKeyMonitor: Any?
     private var localMouseMonitor: Any?
     private var globalMouseMonitor: Any?
+    private let logger = Logger(subsystem: "com.caner.snapassist", category: "Picker")
+    private let diagnostics = DiagnosticsStore.shared
 
     var isVisible: Bool { !panels.isEmpty }
 
     func present(session: AssistSession, thumbnails: [String: NSImage]) {
-        dismiss(notify: false)
+        dismiss(notify: false, reason: "replace presentation")
         guard !session.emptyZoneIDs.isEmpty, !session.candidates.isEmpty else { return }
 
         navigation = PickerNavigation(
@@ -205,6 +208,13 @@ final class PickerController {
         if let activeZone = navigation.activeZoneID {
             panels[activeZone]?.makeKey()
         }
+        logger.notice(
+            "Presented \(self.panels.count) picker panel(s) for zones=\(session.emptyZoneIDs, privacy: .public) candidates=\(session.candidates.count) frames=\(session.emptyZoneIDs.map { String(describing: session.group.layout.zoneFrames[$0]) }, privacy: .public)"
+        )
+        diagnostics.record(
+            category: "picker",
+            "presented panels=\(panels.count), candidates=\(session.candidates.count)"
+        )
     }
 
     func updateThumbnails(_ thumbnails: [String: NSImage]) {
@@ -221,7 +231,11 @@ final class PickerController {
         NSSound.beep()
     }
 
-    func dismiss(notify: Bool = true) {
+    func dismiss(notify: Bool = true, reason: String = "requested") {
+        if !panels.isEmpty {
+            logger.notice("Dismissed \(self.panels.count) picker panel(s): \(reason, privacy: .public)")
+            diagnostics.record(category: "picker", "dismissed panels=\(panels.count), reason=\(reason)")
+        }
         removeEventMonitors()
         panels.values.forEach { $0.orderOut(nil) }
         panels.removeAll()
@@ -254,7 +268,7 @@ final class PickerController {
     private func handleKey(_ event: NSEvent) -> Bool {
         switch event.keyCode {
         case 53:
-            dismiss()
+            dismiss(reason: "Escape")
         case 48:
             navigation.moveZone(by: event.modifierFlags.contains(.shift) ? -1 : 1)
             updateSelection()
@@ -287,7 +301,7 @@ final class PickerController {
 
     private func cancelIfOutsidePanels(point: CGPoint) {
         guard panels.values.allSatisfy({ !$0.frame.contains(point) }) else { return }
-        dismiss()
+        dismiss(reason: "outside click at \(point)")
     }
 
 

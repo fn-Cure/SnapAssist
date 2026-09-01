@@ -19,6 +19,7 @@ final class AppPreferencesModel: ObservableObject {
     @Published private(set) var degradedObserverCount: Int
     @Published private(set) var lastMutationFailure: String?
     @Published private(set) var settingsError: String?
+    @Published private(set) var diagnosticsCopied = false
 
     var onboardingCompleted: Bool {
         get { UserDefaults.standard.bool(forKey: Keys.onboardingCompleted) }
@@ -92,5 +93,23 @@ final class AppPreferencesModel: ObservableObject {
     func requestScreenRecording() {
         coordinator.windowSystem.requestScreenRecordingPermission()
         refresh()
+    }
+
+    func copyDiagnostics() {
+        let report = DiagnosticsStore.shared.report(header: [
+            "SnapAssist \(versionDescription)",
+            "Accessibility: \(accessibilityTrusted ? "granted" : "denied")",
+            "Screen Recording: \(screenRecordingGranted ? "granted" : "denied")",
+            "Observer failures: \(observerFailureCount)",
+            "Observer fallbacks: \(degradedObserverCount)",
+            "Last mutation failure: \(lastMutationFailure ?? "none")",
+        ])
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(report, forType: .string)
+        diagnosticsCopied = true
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            self?.diagnosticsCopied = false
+        }
     }
 }

@@ -61,13 +61,14 @@ final class WindowSystem {
     private var workspaceObservers: [NSObjectProtocol] = []
     private var notificationObservers: [NSObjectProtocol] = []
     private var permissionTimer: Timer?
-    private var degradedPollTimer: Timer?
+    private var geometryPollTimer: DispatchSourceTimer?
     private var lastAccessibilityTrust = AXIsProcessTrusted()
     private var observerRetryWorkItems: [pid_t: DispatchWorkItem] = [:]
     private var observerRetryAttempts: [pid_t: Int] = [:]
     private var degradedObserverPIDs: Set<pid_t> = []
-    private var lastPolledFrames: [String: CGRect] = [:]
+    private var lastPolledCGFrames: [String: CGRect] = [:]
     private let logger = Logger(subsystem: "com.caner.snapassist", category: "WindowSystem")
+    private let diagnostics = DiagnosticsStore.shared
     private(set) var observerFailureCount = 0
     private(set) var lastMutationFailureDescription: String?
 
@@ -119,6 +120,7 @@ final class WindowSystem {
                 Task { @MainActor in
                     self?.refreshObservers()
                     self?.onEvent?(.inventoryChanged)
+                    self?.pollKnownWindowGeometry()
                 }
             })
         }
@@ -144,6 +146,9 @@ final class WindowSystem {
             Task { @MainActor in self?.onEvent?(.environmentChanged) }
         })
         refreshObservers()
+        _ = visibleWindows()
+        seedKnownWindowGeometry()
+        updateFocusedPollTimer()
         permissionTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshAccessibilityState() }
         }
@@ -157,13 +162,13 @@ final class WindowSystem {
         notificationObservers.removeAll()
         permissionTimer?.invalidate()
         permissionTimer = nil
-        degradedPollTimer?.invalidate()
-        degradedPollTimer = nil
+        geometryPollTimer?.cancel()
+        geometryPollTimer = nil
         observerRetryWorkItems.values.forEach { $0.cancel() }
         observerRetryWorkItems.removeAll()
         observerRetryAttempts.removeAll()
         degradedObserverPIDs.removeAll()
-        lastPolledFrames.removeAll()
+        lastPolledCGFrames.removeAll()
         for observer in observers.values {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
         }
@@ -180,12 +185,15 @@ final class WindowSystem {
         lastAccessibilityTrust = trusted
         if trusted {
             refreshObservers()
+            _ = visibleWindows()
+            seedKnownWindowGeometry()
         } else {
             for observer in observers.values {
                 CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
             }
             observers.removeAll()
             records.removeAll()
+            lastPolledCGFrames.removeAll()
         }
         onEvent?(.environmentChanged)
     }
@@ -264,8 +272,12 @@ final class WindowSystem {
     }
 
     func frame(for windowID: String) -> CGRect? {
-        guard let record = records[windowID] else { return nil }
-        return frame(of: record.element)
+        if let record = records[windowID] {
+            return frame(of: record.element)
+        }
+        return onscreenWindowMetadata().first { metadata in
+            self.windowID(processID: metadata.processID, cgWindowID: metadata.windowID) == windowID
+        }?.frame
     }
 
     @discardableResult
@@ -515,6 +527,10 @@ final class WindowSystem {
         logger.notice(
             "AX mutation pid=\(processID) cgWindowID=\(cgWindowID) verification=\(verification.rawValue, privacy: .public) attempts=\(attemptCount) rolledBack=\(rolledBack) before=\(String(describing: frameBefore), privacy: .public) requested=\(String(describing: requestedFrame), privacy: .public) after=\(String(describing: frameAfter), privacy: .public) sizeErrors=\(sizeErrors.map(\.rawValue), privacy: .public) positionError=\(String(describing: positionError?.rawValue), privacy: .public)"
         )
+        diagnostics.record(
+            category: "mutation",
+            "pid=\(processID), window=\(cgWindowID), verification=\(verification.rawValue), attempts=\(attemptCount), rolledBack=\(rolledBack)"
+        )
 
         return WindowMutationResult(
             requestedFrame: requestedFrame,
@@ -571,7 +587,7 @@ final class WindowSystem {
             installObserver(for: app.processIdentifier)
         }
         logger.debug("Active AX observers: \(self.observers.count)")
-        updateDegradedPollTimer()
+        updateFocusedPollTimer()
     }
 
     private func installObserver(for processID: pid_t) {
@@ -612,7 +628,7 @@ final class WindowSystem {
             AXUIElementGetPid(element, &processID)
             degradedObserverPIDs.remove(processID)
             observerRetryAttempts.removeValue(forKey: processID)
-            updateDegradedPollTimer()
+            updateFocusedPollTimer()
             guard let windowID = resolveWindowID(processID: processID, element: element) else {
                 onEvent?(.inventoryChanged)
                 return
@@ -643,15 +659,19 @@ final class WindowSystem {
         if result == .invalidUIElement || result == .cannotComplete {
             var processID: pid_t = 0
             AXUIElementGetPid(element, &processID)
-            degradedObserverPIDs.insert(processID)
+            let inserted = degradedObserverPIDs.insert(processID).inserted
             logger.debug("Deferring AX observer registration for transient error \(result.rawValue) in pid \(processID)")
+            if inserted {
+                diagnostics.record(category: "observer", "pid=\(processID) entered fallback after AX error \(result.rawValue)")
+            }
             scheduleObserverRetry(for: processID)
-            updateDegradedPollTimer()
+            updateFocusedPollTimer()
             return
         }
         if result != .success && result != .notificationAlreadyRegistered && result != .notificationUnsupported {
             observerFailureCount += 1
             logger.error("AXObserverAddNotification failed for \(notification, privacy: .public) with code \(result.rawValue)")
+            diagnostics.record(category: "observer", "registration failed with AX error \(result.rawValue)")
         }
     }
 
@@ -680,30 +700,50 @@ final class WindowSystem {
         )
     }
 
-    private func updateDegradedPollTimer() {
-        if degradedObserverPIDs.isEmpty {
-            degradedPollTimer?.invalidate()
-            degradedPollTimer = nil
-            lastPolledFrames.removeAll()
-            return
-        }
-        guard degradedPollTimer == nil else { return }
-        degradedPollTimer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.pollDegradedFrontmostWindow() }
-        }
+    private func updateFocusedPollTimer() {
+        guard geometryPollTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + 0.5, repeating: 0.5, leeway: .milliseconds(100))
+        timer.setEventHandler { [weak self] in self?.pollKnownWindowGeometry() }
+        geometryPollTimer = timer
+        timer.resume()
+        logger.notice("Started CG geometry fallback polling")
     }
 
-    private func pollDegradedFrontmostWindow() {
-        guard isEnabled,
-              isAccessibilityTrusted,
-              let app = NSWorkspace.shared.frontmostApplication,
-              degradedObserverPIDs.contains(app.processIdentifier),
-              let windowID = focusedWindowID(),
-              let currentFrame = frame(for: windowID) else { return }
-        defer { lastPolledFrames[windowID] = currentFrame }
-        guard let previousFrame = lastPolledFrames[windowID],
-              !previousFrame.isApproximatelyEqual(to: currentFrame, tolerance: 2) else { return }
-        onEvent?(.geometryChanged(windowID: windowID))
+    private func seedKnownWindowGeometry() {
+        lastPolledCGFrames = Dictionary(uniqueKeysWithValues: onscreenWindowMetadata().compactMap { item in
+            guard item.processID != ProcessInfo.processInfo.processIdentifier,
+                  item.frame.width >= 80,
+                  item.frame.height >= 60 else { return nil }
+            let id = windowID(processID: item.processID, cgWindowID: item.windowID)
+            return (id, item.frame)
+        })
+    }
+
+    private func pollKnownWindowGeometry() {
+        guard isEnabled, isAccessibilityTrusted else { return }
+        let metadata = onscreenWindowMetadata()
+        let currentFrames = Dictionary(uniqueKeysWithValues: metadata.compactMap { item -> (String, CGRect)? in
+            guard item.processID != ProcessInfo.processInfo.processIdentifier,
+                  item.frame.width >= 80,
+                  item.frame.height >= 60 else { return nil }
+            let id = windowID(processID: item.processID, cgWindowID: item.windowID)
+            return (id, item.frame)
+        })
+        let previousFrames = lastPolledCGFrames
+        lastPolledCGFrames = currentFrames
+
+        var inventoryChanged = previousFrames.keys.contains { currentFrames[$0] == nil }
+        for (windowID, currentFrame) in currentFrames {
+            guard let previousFrame = previousFrames[windowID] else {
+                inventoryChanged = true
+                continue
+            }
+            guard !previousFrame.isApproximatelyEqual(to: currentFrame, tolerance: 2) else { continue }
+            logger.debug("CG polling detected geometry change window=\(windowID, privacy: .public) from=\(String(describing: previousFrame), privacy: .public) to=\(String(describing: currentFrame), privacy: .public)")
+            onEvent?(.geometryChanged(windowID: windowID))
+        }
+        if inventoryChanged { onEvent?(.inventoryChanged) }
     }
 
     private func windows(of appElement: AXUIElement) -> [AXUIElement] {

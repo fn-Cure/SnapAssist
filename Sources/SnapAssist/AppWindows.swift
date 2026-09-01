@@ -156,6 +156,14 @@ private struct PermissionSettingsView: View {
                     Label(failure, systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                 }
+                Button {
+                    model.copyDiagnostics()
+                } label: {
+                    Label(
+                        model.diagnosticsCopied ? "Diagnose kopiert" : "Diagnose kopieren",
+                        systemImage: model.diagnosticsCopied ? "checkmark" : "doc.on.doc"
+                    )
+                }
             }
         }
         .formStyle(.grouped)

@@ -16,6 +16,7 @@ final class AppCoordinator {
     private var activeMutationWindowIDs: Set<String> = []
     private var thumbnailCache: [String: NSImage] = [:]
     private let logger = Logger(subsystem: "com.caner.snapassist", category: "Coordinator")
+    private let diagnostics = DiagnosticsStore.shared
     private lazy var linkedResizeController = LinkedResizeController(
         windowSystem: windowSystem,
         groupsProvider: { [weak self] in self?.runtimeState.groups ?? [:] },
@@ -141,9 +142,19 @@ final class AppCoordinator {
 
     private func detectSnap(windowID: String) {
         let windows = windowSystem.visibleWindows()
-        guard let trigger = windows.first(where: { $0.id == windowID }),
-              let screenFrame = windowSystem.screenFrame(for: trigger.screenID),
-              let session = LayoutStateBuilder.buildSession(
+        guard let trigger = windows.first(where: { $0.id == windowID }) else {
+            invalidate(windowID: windowID, dismissPicker: true)
+            logger.notice("Discarded geometry event: stable window \(windowID, privacy: .public) missing from AX/CG catalog of \(windows.count) window(s)")
+            diagnostics.record(category: "detection", "discarded: stable ID missing from correlated catalog")
+            return
+        }
+        guard let screenFrame = windowSystem.screenFrame(for: trigger.screenID) else {
+            invalidate(windowID: windowID, dismissPicker: true)
+            logger.notice("Discarded geometry event: display \(trigger.screenID, privacy: .public) unavailable for window \(windowID, privacy: .public)")
+            diagnostics.record(category: "detection", "discarded: display unavailable")
+            return
+        }
+        guard let session = LayoutStateBuilder.buildSession(
                 trigger: trigger,
                 windowsOnTargetScreen: windows.filter { $0.screenID == trigger.screenID },
                 allVisibleWindows: windows,
@@ -151,11 +162,16 @@ final class AppCoordinator {
                 ownProcessID: ProcessInfo.processInfo.processIdentifier
               ) else {
             invalidate(windowID: windowID, dismissPicker: true)
-            logger.debug("Geometry event did not produce a supported snap for \(windowID, privacy: .public)")
+            logger.notice("Discarded geometry event: frame=\(String(describing: trigger.frame), privacy: .public) does not match a supported layout on screen=\(String(describing: screenFrame), privacy: .public)")
+            diagnostics.record(category: "detection", "discarded: geometry does not match supported layout")
             return
         }
 
         logger.notice("Detected \(session.group.layout.kind.rawValue, privacy: .public) snap with \(session.emptyZoneIDs.count) empty zones and \(session.candidates.count) candidates")
+        diagnostics.record(
+            category: "detection",
+            "layout=\(session.group.layout.kind.rawValue), emptyZones=\(session.emptyZoneIDs.count), candidates=\(session.candidates.count)"
+        )
         let generation = runtimeState.install(session)
         thumbnailTask?.cancel()
         thumbnailCache = thumbnailCache.filter { id, _ in session.candidates.contains(where: { $0.id == id }) }
@@ -228,6 +244,10 @@ final class AppCoordinator {
         let result = await windowSystem.setFrame(targetFrame, for: windowID)
         activeMutationWindowIDs.remove(windowID)
         guard result.succeeded, let verifiedFrame = result.frameAfter else {
+            diagnostics.record(
+                category: "mutation",
+                "placement failed: verification=\(result.verification.rawValue), attempts=\(result.attemptCount), rolledBack=\(result.rolledBack)"
+            )
             mutationLedger.cancel(windowID: windowID)
             if runtimeState.activeSession == originalSession {
                 pickerController.present(session: originalSession, thumbnails: thumbnailCache)
@@ -243,6 +263,7 @@ final class AppCoordinator {
         }
 
         stagedSession.group.verifiedFrames[windowID] = verifiedFrame
+        diagnostics.record(category: "mutation", "placement verified in \(result.attemptCount) attempt(s)")
         let generation = runtimeState.install(stagedSession)
         _ = windowSystem.raise(windowID: windowID)
 
@@ -287,6 +308,7 @@ final class AppCoordinator {
 
     private func invalidateAll(reason: String) {
         logger.notice("Invalidating volatile state: \(reason, privacy: .public)")
+        diagnostics.record(category: "lifecycle", "invalidated: \(reason)")
         pendingDetections.values.forEach { $0.cancel() }
         pendingDetections.removeAll()
         thumbnailTask?.cancel()
