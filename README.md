@@ -15,7 +15,7 @@ SnapAssist ergänzt das vorhandene macOS- oder Raycast-Snapping um eine Windows-
 
 ## Voraussetzungen
 
-- Apple-Silicon-Mac mit macOS 15 oder neuer.
+- Mac mit Apple Silicon oder Intel-Prozessor und macOS 15 oder neuer.
 - **Bedienungshilfen** sind zwingend erforderlich, damit SnapAssist Fenster lesen und positionieren kann.
 - **Bildschirmaufnahme** ist optional und wird nur für lokale Fenstervorschauen verwendet. Ohne diese Berechtigung funktionieren Icon und Fenstertitel weiter.
 
@@ -68,15 +68,15 @@ SNAPASSIST_NOTARY_PROFILE=SnapAssist-Notary scripts/package-release.sh
 scripts/verify-release.sh outputs/release/SnapAssist.dmg
 ```
 
-Ohne Developer-ID-Zertifikat oder Notary-Profil erzeugt das Release-Skript bewusst kein öffentliches Artefakt. Die lokale Datenschutzbeschreibung liegt unter [docs/privacy-policy.md](docs/privacy-policy.md); vor Veröffentlichung müssen ein öffentlicher Supportkontakt und eine stabile HTTPS-Version ergänzt werden.
+Ohne Developer-ID-Zertifikat oder Notary-Profil erzeugt das Release-Skript bewusst kein öffentliches Artefakt. Die [Datenschutzrichtlinie](https://github.com/fn-Cure/SnapAssist/blob/main/docs/privacy-policy.md) und der [öffentliche Support](https://github.com/fn-Cure/SnapAssist/issues) liegen im GitHub-Repository. „Nach Updates suchen…“ öffnet die jeweils [neueste GitHub-Version](https://github.com/fn-Cure/SnapAssist/releases/latest); SnapAssist lädt oder installiert nichts ungefragt.
 
 ## Integration Fixture
 
 `SnapAssistFixture` erzeugt kontrollierte gleichnamige Fenster, Mindestgrößen, Modaldialoge, Titelwechsel und eine kurz blockierende UI. Sie dient ausschließlich der lokalen AX-/Picker-Abnahme und wird nicht in `SnapAssist.app` gebündelt.
 
-## Bewusste Grenzen des MVP
+## Bewusste Grenzen
 
 - Es werden nur aktuell sichtbare Spaces berücksichtigt.
 - Layout-Gruppen werden beim Neustart nicht gespeichert.
 - Einzelne Apps können Accessibility-Größenänderungen ablehnen oder eigene Mindestgrößen erzwingen.
-- Die installierte App wird mit dem lokal verfügbaren Apple-Development-Zertifikat signiert; ohne Zertifikat fällt der Build auf Ad-hoc zurück. Sie ist nicht für eine öffentliche Verteilung notarisiert.
+- Entwicklungsinstallationen werden mit dem lokal verfügbaren Apple-Development-Zertifikat signiert. Eine Ad-hoc-Signatur ist nur nach expliziter Freigabe möglich. Öffentliche Builds werden ohne Developer-ID-Zertifikat und erfolgreiche Notarisierung nicht erzeugt.

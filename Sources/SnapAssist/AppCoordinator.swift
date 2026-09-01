@@ -13,6 +13,7 @@ final class AppCoordinator {
     private var pendingDetections: [String: DispatchWorkItem] = [:]
     private var thumbnailTask: Task<Void, Never>?
     private var placementTask: Task<Void, Never>?
+    private var placementOperationID: UUID?
     private var activeMutationWindowIDs: Set<String> = []
     private var thumbnailCache: [String: NSImage] = [:]
     private let logger = Logger(subsystem: "com.caner.snapassist", category: "Coordinator")
@@ -71,6 +72,7 @@ final class AppCoordinator {
             guard let self else { return }
             self.thumbnailTask?.cancel()
             self.thumbnailTask = nil
+            self.thumbnailCache.removeAll()
             self.runtimeState.cancelSession(removeIncompleteGroup: true)
         }
     }
@@ -179,6 +181,7 @@ final class AppCoordinator {
         guard !session.emptyZoneIDs.isEmpty, !session.candidates.isEmpty else {
             pickerController.dismiss(notify: false)
             runtimeState.cancelSession(removeIncompleteGroup: true)
+            thumbnailCache.removeAll()
             return
         }
 
@@ -204,6 +207,7 @@ final class AppCoordinator {
     }
 
     private func place(windowID: String, into zoneID: Int) {
+        guard placementTask == nil else { return }
         guard let originalSession = runtimeState.activeSession else { return }
         var stagedSession = originalSession
         guard
@@ -212,10 +216,16 @@ final class AppCoordinator {
         }
 
         pickerController.setBusy(true)
-        placementTask?.cancel()
+        let placementOperationID = UUID()
+        self.placementOperationID = placementOperationID
         placementTask = Task { [weak self] in
             guard let self else { return }
-            defer { self.placementTask = nil }
+            defer {
+                if self.placementOperationID == placementOperationID {
+                    self.placementTask = nil
+                    self.placementOperationID = nil
+                }
+            }
             await self.performPlacement(
                 originalSession: originalSession,
                 stagedSession: stagedSession,
@@ -283,6 +293,7 @@ final class AppCoordinator {
             runtimeState.cancelSession(removeIncompleteGroup: true)
             thumbnailTask?.cancel()
             thumbnailTask = nil
+            thumbnailCache.removeAll()
         } else {
             thumbnailCache = thumbnailCache.filter { id, _ in stagedSession.candidates.contains(where: { $0.id == id }) }
             pickerController.present(session: stagedSession, thumbnails: thumbnailCache)
@@ -326,6 +337,7 @@ final class AppCoordinator {
         thumbnailTask = nil
         placementTask?.cancel()
         placementTask = nil
+        placementOperationID = nil
         activeMutationWindowIDs.removeAll()
         thumbnailCache.removeAll()
         mutationLedger.cancelAll()

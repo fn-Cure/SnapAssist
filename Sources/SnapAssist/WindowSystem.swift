@@ -63,6 +63,7 @@ final class WindowSystem {
     private var permissionTimer: Timer?
     private var geometryPollTimer: DispatchSourceTimer?
     private var lastAccessibilityTrust = AXIsProcessTrusted()
+    private var lastScreenRecordingPermission = CGPreflightScreenCaptureAccess()
     private var observerRetryWorkItems: [pid_t: DispatchWorkItem] = [:]
     private var observerRetryAttempts: [pid_t: Int] = [:]
     private var degradedObserverPIDs: Set<pid_t> = []
@@ -178,22 +179,28 @@ final class WindowSystem {
 
     func refreshAccessibilityState() {
         let trusted = isAccessibilityTrusted
-        guard trusted != lastAccessibilityTrust else {
+        let screenRecordingGranted = hasScreenRecordingPermission
+        let trustChanged = trusted != lastAccessibilityTrust
+        let screenRecordingChanged = screenRecordingGranted != lastScreenRecordingPermission
+        guard trustChanged || screenRecordingChanged else {
             if trusted && observers.isEmpty { refreshObservers() }
             return
         }
         lastAccessibilityTrust = trusted
-        if trusted {
-            refreshObservers()
-            _ = visibleWindows()
-            seedKnownWindowGeometry()
-        } else {
-            for observer in observers.values {
-                CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+        lastScreenRecordingPermission = screenRecordingGranted
+        if trustChanged {
+            if trusted {
+                refreshObservers()
+                _ = visibleWindows()
+                seedKnownWindowGeometry()
+            } else {
+                for observer in observers.values {
+                    CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+                }
+                observers.removeAll()
+                records.removeAll()
+                lastPolledCGFrames.removeAll()
             }
-            observers.removeAll()
-            records.removeAll()
-            lastPolledCGFrames.removeAll()
         }
         onEvent?(.environmentChanged)
     }
@@ -341,6 +348,21 @@ final class WindowSystem {
             intervalNanoseconds: 30_000_000
         )
 
+        if Task.isCancelled {
+            let rolledBack = await restoreFrame(frameBefore, element: record.element)
+            return mutationResult(
+                requestedFrame: cocoaFrame,
+                frameBefore: frameBefore,
+                readback: readback,
+                sizeErrors: sizeErrors,
+                positionError: positionError,
+                attemptCount: attemptCount,
+                rolledBack: rolledBack,
+                processID: record.processID,
+                cgWindowID: record.cgWindowID
+            )
+        }
+
         if case .verified = readback {
             return mutationResult(
                 requestedFrame: cocoaFrame,
@@ -450,7 +472,8 @@ final class WindowSystem {
         _ requestedFrame: CGRect,
         element: AXUIElement,
         maximumSamples: Int,
-        intervalNanoseconds: UInt64
+        intervalNanoseconds: UInt64,
+        ignoreCancellation: Bool = false
     ) async -> FrameReadbackDecision {
         var verifier = FrameReadbackVerifier(
             requestedFrame: requestedFrame,
@@ -458,16 +481,30 @@ final class WindowSystem {
             maximumSamples: maximumSamples
         )
         for index in 0..<maximumSamples {
+            guard ignoreCancellation || !Task.isCancelled else { return .unavailable }
             let decision = verifier.observe(frame(of: element))
             if decision != .pending { return decision }
             if index + 1 < maximumSamples {
-                try? await Task.sleep(nanoseconds: intervalNanoseconds)
+                do {
+                    if ignoreCancellation {
+                        await withCheckedContinuation { continuation in
+                            DispatchQueue.main.asyncAfter(deadline: .now() + .nanoseconds(Int(intervalNanoseconds))) {
+                                continuation.resume()
+                            }
+                        }
+                    } else {
+                        try await Task.sleep(nanoseconds: intervalNanoseconds)
+                    }
+                } catch {
+                    return .unavailable
+                }
             }
         }
         return .unavailable
     }
 
-    private func restoreFrame(_ cocoaFrame: CGRect, element: AXUIElement) async -> Bool {
+    private func restoreFrame(_ cocoaFrame: CGRect?, element: AXUIElement) async -> Bool {
+        guard let cocoaFrame else { return false }
         let axFrame = ScreenCoordinateConverter.cocoaToAX(
             cocoaFrame,
             primaryScreenHeight: primaryScreenHeight
@@ -486,7 +523,8 @@ final class WindowSystem {
             cocoaFrame,
             element: element,
             maximumSamples: 6,
-            intervalNanoseconds: 30_000_000
+            intervalNanoseconds: 30_000_000,
+            ignoreCancellation: true
         )
         if case .verified = readback { return true }
         return false
@@ -503,26 +541,27 @@ final class WindowSystem {
         processID: pid_t,
         cgWindowID: CGWindowID
     ) -> WindowMutationResult {
-        let frameAfter: CGRect?
+        let observedFrameAfter: CGRect?
         let verification: WindowMutationVerification
         switch readback {
         case let .verified(frame):
-            frameAfter = frame
+            observedFrameAfter = frame
             verification = .verified
             lastMutationFailureDescription = nil
         case let .mismatched(frame):
-            frameAfter = frame
+            observedFrameAfter = frame
             verification = sizeErrors.isEmpty && positionError == nil ? .clamped : .failed
             lastMutationFailureDescription = "Ziel-App hat Position oder Größe nicht übernommen"
         case .unavailable:
-            frameAfter = nil
+            observedFrameAfter = nil
             verification = .unavailable
             lastMutationFailureDescription = "Fenster-Frame konnte nicht verifiziert werden"
         case .pending:
-            frameAfter = nil
+            observedFrameAfter = nil
             verification = .failed
             lastMutationFailureDescription = "Fenster-Frame blieb instabil"
         }
+        let frameAfter = rolledBack ? frameBefore : observedFrameAfter
 
         logger.notice(
             "AX mutation pid=\(processID) cgWindowID=\(cgWindowID) verification=\(verification.rawValue, privacy: .public) attempts=\(attemptCount) rolledBack=\(rolledBack) before=\(String(describing: frameBefore), privacy: .public) requested=\(String(describing: requestedFrame), privacy: .public) after=\(String(describing: frameAfter), privacy: .public) sizeErrors=\(sizeErrors.map(\.rawValue), privacy: .public) positionError=\(String(describing: positionError?.rawValue), privacy: .public)"
@@ -733,12 +772,9 @@ final class WindowSystem {
         let previousFrames = lastPolledCGFrames
         lastPolledCGFrames = currentFrames
 
-        var inventoryChanged = previousFrames.keys.contains { currentFrames[$0] == nil }
+        let inventoryChanged = previousFrames.keys.contains { currentFrames[$0] == nil }
         for (windowID, currentFrame) in currentFrames {
-            guard let previousFrame = previousFrames[windowID] else {
-                inventoryChanged = true
-                continue
-            }
+            guard let previousFrame = previousFrames[windowID] else { continue }
             guard !previousFrame.isApproximatelyEqual(to: currentFrame, tolerance: 2) else { continue }
             logger.debug("CG polling detected geometry change window=\(windowID, privacy: .public) from=\(String(describing: previousFrame), privacy: .public) to=\(String(describing: currentFrame), privacy: .public)")
             onEvent?(.geometryChanged(windowID: windowID))

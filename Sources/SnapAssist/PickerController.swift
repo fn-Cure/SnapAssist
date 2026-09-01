@@ -49,6 +49,12 @@ struct PickerZoneView: View {
                 Text(model.targetLabel)
                     .font(.headline)
                 Spacer()
+                if !model.thumbnails.isEmpty {
+                    Label("Vorschauen aktiv", systemImage: "eye.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Fenstervorschauen sind aktiv")
+                }
                 Text("Esc")
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
@@ -307,6 +313,7 @@ final class PickerController {
             navigation.moveCandidate(by: 1)
             updateSelection()
         case 36, 76:
+            guard !models.values.contains(where: \.isBusy) else { return true }
             if let windowID = navigation.selectedCandidateID,
                let zoneID = navigation.activeZoneID {
                 onSelect?(windowID, zoneID)
